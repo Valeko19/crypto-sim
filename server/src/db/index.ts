@@ -1,0 +1,55 @@
+import { PGlite } from '@electric-sql/pglite';
+import path from 'node:path';
+
+// Embedded real Postgres (compiled to WASM) — no local Postgres install/service
+// required. Data persists to disk between dev-server restarts.
+const dataDir = path.join(process.cwd(), '.pgdata');
+
+export const db = new PGlite(dataDir);
+
+export async function initDb() {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS players (
+      id TEXT PRIMARY KEY,
+      username TEXT NOT NULL,
+      usdd_balance DOUBLE PRECISION NOT NULL DEFAULT 0,
+      trades_count INTEGER NOT NULL DEFAULT 0,
+      total_volume DOUBLE PRECISION NOT NULL DEFAULT 0,
+      realized_pnl DOUBLE PRECISION NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE TABLE IF NOT EXISTS player_holdings (
+      player_id TEXT NOT NULL REFERENCES players(id),
+      coin_id TEXT NOT NULL,
+      amount DOUBLE PRECISION NOT NULL DEFAULT 0,
+      avg_buy_price DOUBLE PRECISION NOT NULL DEFAULT 0,
+      PRIMARY KEY (player_id, coin_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS quest_progress (
+      player_id TEXT NOT NULL REFERENCES players(id),
+      quest_type TEXT NOT NULL,
+      coin_id TEXT NOT NULL DEFAULT 'none',
+      threshold DOUBLE PRECISION NOT NULL DEFAULT 0,
+      claimed_at TIMESTAMPTZ,
+      PRIMARY KEY (player_id, quest_type, coin_id, threshold)
+    );
+
+    CREATE TABLE IF NOT EXISTS npc_bots (
+      id TEXT PRIMARY KEY,
+      username TEXT NOT NULL,
+      simulated_net_worth DOUBLE PRECISION NOT NULL,
+      league TEXT NOT NULL
+    );
+
+    -- AMM pool reserves, snapshotted periodically so a server restart resumes
+    -- prices where they left off instead of re-issuing already-sold supply
+    -- (which let cumulative holdings exceed 100% of emission across restarts).
+    CREATE TABLE IF NOT EXISTS coin_pools (
+      coin_id TEXT PRIMARY KEY,
+      coin_reserve DOUBLE PRECISION NOT NULL,
+      usdd_reserve DOUBLE PRECISION NOT NULL
+    );
+  `);
+}
