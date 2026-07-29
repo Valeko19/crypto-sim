@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { EngineState, change24hPct } from '../engine/state.js';
 import { buyWithUsdd, sellCoin, quoteBuy, quoteSell, price } from '../engine/amm.js';
 import { forcePhase, fearGreedLabel, phaseProgress } from '../engine/tick.js';
+import { justifiedPrice } from '../engine/gravity.js';
 import { MACRO_CONFIG, MACRO_ORDER, MacroPhase } from '../engine/macroCycle.js';
 import { COINS, COIN_MAP, TRADE_FEE_PCT, MIN_TRADE_USDD, sectionOf } from '../config/coins.js';
 import { RANKS } from '../config/ranks.js';
@@ -93,6 +94,7 @@ export function createRouter(state: EngineState) {
       const netIn = usddIn - fee;
       const result = buyWithUsdd(cs.pool, netIn);
       await applyBuy(LOCAL_PLAYER_ID, coinId, result.coinAmount, usddIn, result.avgPrice);
+      cs.playerOwnedCoins += result.coinAmount;
       return res.json({ ...result, fee });
     } else if (side === 'sell') {
       const holding = await getHolding(LOCAL_PLAYER_ID, coinId);
@@ -106,6 +108,7 @@ export function createRouter(state: EngineState) {
       const fee = result.usddAmount * TRADE_FEE_PCT;
       const netOut = result.usddAmount - fee;
       await applySell(LOCAL_PLAYER_ID, coinId, coinIn, netOut, result.avgPrice);
+      cs.playerOwnedCoins = Math.max(0, cs.playerOwnedCoins - coinIn);
       return res.json({ ...result, usddAmount: netOut, fee });
     }
     return res.status(400).json({ error: 'side must be buy or sell' });
@@ -238,13 +241,21 @@ export function createRouter(state: EngineState) {
   // seeing exactly how much each force (macro drift, local cycle, base noise,
   // relative noise) actually contributed, instead of inferring it from the chart.
   router.get('/debug/tick-breakdown', (req, res) => {
-    const breakdown = COINS.map(cfg => ({
-      id: cfg.id,
-      symbol: cfg.symbol,
-      ...state.coins[cfg.id].lastTick,
-    }));
+    const breakdown = COINS.map(cfg => {
+      const cs = state.coins[cfg.id];
+      return {
+        id: cfg.id,
+        symbol: cfg.symbol,
+        ...cs.lastTick,
+        projectLevel: cs.projectLevel,
+        playerOwnedCoins: cs.playerOwnedCoins,
+        justifiedPrice: justifiedPrice(cs),
+        currentPrice: price(cs.pool),
+      };
+    });
     res.json({
       phase: state.macroPhase,
+      macroMode: state.macroMode,
       macroPhaseDriftPctPerMin: state.macroPhaseDriftPctPerMin,
       coins: breakdown,
     });

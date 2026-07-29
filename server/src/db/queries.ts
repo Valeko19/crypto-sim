@@ -175,3 +175,20 @@ export async function savePoolSnapshot(coinId: string, coinReserve: number, usdd
     [coinId, coinReserve, usddReserve]
   );
 }
+
+// Total held across ALL players for a coin — used to reconcile the pool reserve
+// at boot so it can never re-issue supply that's already owned (see index.ts).
+export async function getTotalHeldForCoin(coinId: string): Promise<number> {
+  const res = await db.query<{ total: number }>(
+    'SELECT COALESCE(SUM(amount), 0)::float as total FROM player_holdings WHERE coin_id = $1',
+    [coinId]
+  );
+  return Number(res.rows[0].total);
+}
+
+export async function capHoldingAmount(playerId: string, coinId: string, newAmount: number): Promise<void> {
+  await db.query(
+    'UPDATE player_holdings SET amount = $1 WHERE player_id = $2 AND coin_id = $3',
+    [newAmount, playerId, coinId]
+  );
+}

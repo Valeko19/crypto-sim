@@ -7,7 +7,7 @@ import { MACRO_CONFIG } from './engine/macroCycle.js';
 import { price } from './engine/amm.js';
 import { COINS } from './config/coins.js';
 import { initDb } from './db/index.js';
-import { ensureLocalPlayer, LOCAL_PLAYER_ID, getAllPoolSnapshots, savePoolSnapshot } from './db/queries.js';
+import { ensureLocalPlayer, LOCAL_PLAYER_ID, getAllPoolSnapshots, savePoolSnapshot, getTotalHeldForCoin } from './db/queries.js';
 import { seedNpcBotsIfNeeded, driftNpcBots } from './npc/bots.js';
 import { createRouter } from './api/routes.js';
 import { createWsServer } from './ws/server.js';
@@ -28,6 +28,27 @@ async function main() {
   for (const snap of snapshots) {
     const cs = state.coins[snap.coin_id];
     if (cs) cs.pool = { coinReserve: snap.coin_reserve, usddReserve: snap.usdd_reserve };
+  }
+
+  // Safety net, independent of whether a snapshot existed: the pool must never
+  // hold more reachable supply than emission minus what players already own —
+  // otherwise a fresh/reset pool re-issues coins that are already someone's
+  // holdings, letting cumulative ownership exceed 100% of emission. Enforced
+  // unconditionally on every boot so this can't regress again.
+  for (const cfg of COINS) {
+    const cs = state.coins[cfg.id];
+    const reachable = cfg.emission * (1 - cfg.npcLockedPct);
+    const totalHeld = await getTotalHeldForCoin(cfg.id);
+    const maxAllowedReserve = Math.max(reachable - totalHeld, reachable * 0.0005);
+    if (cs.pool.coinReserve > maxAllowedReserve) {
+      const currentPrice = price(cs.pool);
+      cs.pool.coinReserve = maxAllowedReserve;
+      cs.pool.usddReserve = maxAllowedReserve * currentPrice;
+    }
+    // Seeds the long-horizon gravity anchor's "real participation" metric (see
+    // gravity.ts) from the same real-holdings total used above, so background
+    // drift never gets credited for price support that only real trades earned.
+    cs.playerOwnedCoins = totalHeld;
   }
 
   async function persistPoolSnapshots() {

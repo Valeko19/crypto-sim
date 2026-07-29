@@ -1,4 +1,4 @@
-import { COINS, CoinConfig } from '../config/coins.js';
+import { COINS, COIN_MAP, CoinConfig } from '../config/coins.js';
 import { Pool, price } from './amm.js';
 import { MacroPhase, MACRO_CONFIG } from './macroCycle.js';
 
@@ -24,6 +24,7 @@ export interface TickBreakdown {
   localDriftPct: number;
   baseNoisePct: number;
   relativeNoisePct: number;
+  gravityPct: number;
   totalPct: number;
 }
 
@@ -40,7 +41,23 @@ export interface CoinState {
   livelinessLastUpdateMs: number;
   localCycle: LocalCycleState;
   lastTick: TickBreakdown;
+  // Long-horizon anchor (see gravity.ts): a category-appropriate reference price
+  // set once at init, and the net amount of this coin real players have actually
+  // bought (minus sold) via real trades — tracked separately from the pool's
+  // reserves because those also move from background drift, not just real buys.
+  projectLevel: number;
+  playerOwnedCoins: number;
 }
+
+// The macro drift source lives tick-to-tick as a small state machine (see
+// tick.ts `updateMacroMode`) instead of a pre-planned schedule: most of the
+// phase is spent in 'trend' (drift matching the phase's overall direction),
+// interrupted by occasional 'counter' (temporary against-trend move, sized to
+// plausibly read as a reversal) and 'choppy' (high-amplitude, no-direction
+// chop) interludes. Only in the final stretch of the phase does a "homing"
+// pull blend in, correcting toward the phase's target move — so the path is
+// genuinely unplanned/unpredictable, but the destination is still guaranteed.
+export type MacroMode = 'trend' | 'counter' | 'choppy';
 
 export interface EngineState {
   tickCount: number;
@@ -49,7 +66,13 @@ export interface EngineState {
   macroPhase: MacroPhase;
   macroPhaseStartTick: number;
   macroPhaseEndTick: number;
-  macroPhaseDriftPctPerMin: number; // fixed for the duration of the phase, resampled on entry
+  macroPhaseDriftPctPerMin: number; // the LIVE blended drift for the current tick
+  macroPhaseTargetLogReturn: number; // ln(target multiplier) — fixed for the whole phase
+  macroPhaseStartPrice: number; // BTCR price when the phase began, for measuring progress toward the target
+  macroMode: MacroMode;
+  macroModeEndTick: number;
+  macroModeDriftPctPerMin: number; // current mode's rate (resampled every tick while choppy)
+  macroChoppyAmplitudePctPerMin: number; // reference amplitude while macroMode === 'choppy'
   fearGreedIndex: number;
   coins: Record<string, CoinState>;
 }
@@ -75,7 +98,9 @@ export function createInitialState(): EngineState {
       livelinessHalfLifeMs: 20 * 60_000,
       livelinessLastUpdateMs: Date.now(),
       localCycle: { phase: 'idle', phaseEndTick: 0, driftPctPerMin: 0, riseGainPct: 0 },
-      lastTick: { macroDriftPct: 0, localDriftPct: 0, baseNoisePct: 0, relativeNoisePct: 0, totalPct: 0 },
+      lastTick: { macroDriftPct: 0, localDriftPct: 0, baseNoisePct: 0, relativeNoisePct: 0, gravityPct: 0, totalPct: 0 },
+      projectLevel: cfg.startPrice,
+      playerOwnedCoins: 0, // corrected at boot from real holdings (see index.ts)
     };
   }
   return {
@@ -85,6 +110,12 @@ export function createInitialState(): EngineState {
     macroPhaseStartTick: 0,
     macroPhaseEndTick: 0,
     macroPhaseDriftPctPerMin: 0,
+    macroPhaseTargetLogReturn: 0,
+    macroPhaseStartPrice: COIN_MAP.btcr.startPrice,
+    macroMode: 'trend',
+    macroModeEndTick: 0,
+    macroModeDriftPctPerMin: 0,
+    macroChoppyAmplitudePctPerMin: 0,
     fearGreedIndex: MACRO_CONFIG.accumulation.fearGreedBase,
     coins,
   };
