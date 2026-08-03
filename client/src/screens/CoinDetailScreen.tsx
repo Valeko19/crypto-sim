@@ -4,7 +4,7 @@ import { createChart, ColorType, CandlestickSeriesPartialOptions, IChartApi, ISe
 import { api, CoinListItem } from '../lib/api';
 import { useMarketSocket } from '../hooks/useMarketSocket';
 import { CoinAvatar } from '../components/CoinAvatar';
-import { formatCompact, formatPrice, formatPct, formatUsdd, pctColorClass, pricePrecision } from '../lib/format';
+import { formatCompact, formatPrice, formatPct, formatUsdd, formatQty, parseAmountInput, formatAmountInput, pctColorClass, pricePrecision } from '../lib/format';
 
 // borderVisible must stay on: quiet coins can have a near-zero-height body for
 // several candles in a row, and a fill with no stroke rounds down to nothing
@@ -26,9 +26,12 @@ export function CoinDetailScreen() {
   const [balance, setBalance] = useState(0);
 
   const [side, setSide] = useState<'buy' | 'sell'>('buy');
-  const [mode, setMode] = useState<'usdd' | 'coin'>('usdd');
+  // Buy is always priced in USDD, sell always in the coin itself — no toggle,
+  // so the unit switches automatically with the side instead of needing a
+  // separate control that could get out of sync with it.
+  const mode = side === 'buy' ? 'usdd' : 'coin';
   const [amount, setAmount] = useState('');
-  const [quote, setQuote] = useState<{ avgPrice: number; priceImpactPct: number; feeAmount: number; out: number } | null>(null);
+  const [quote, setQuote] = useState<{ avgPrice: number; priceImpactPct: number; feeAmount: number; feePct: number; out: number } | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -110,7 +113,31 @@ export function CoinDetailScreen() {
   }, [live.candles[coinId], coinId]);
 
   const livePrice = live.prices[coinId]?.price ?? coin?.price ?? 0;
-  const liveChange = live.prices[coinId]?.change24hPct ?? coin?.change24hPct ?? 0;
+  const liveChange = live.prices[coinId]?.changePct ?? coin?.changePct ?? 0;
+
+  // Trading price stays live (every ~1s via WS) since that's what buy/sell
+  // math needs, but market cap only needs to feel current — refresh it every
+  // 10s instead of jumping every tick.
+  const livePriceRef = useRef(livePrice);
+  livePriceRef.current = livePrice;
+  const [capPrice, setCapPrice] = useState(livePrice);
+  useEffect(() => {
+    const interval = setInterval(() => setCapPrice(livePriceRef.current), 10_000);
+    return () => clearInterval(interval);
+  }, []);
+  // The screen stays mounted across coinId changes (route param swap, not a
+  // remount) — resync immediately on navigation instead of showing the
+  // previous coin's cap for up to 10s.
+  useEffect(() => {
+    setCapPrice(livePriceRef.current);
+  }, [coinId]);
+  // On first load, both the REST coin fetch and the first WS tick can arrive
+  // after this component's initial render, so livePrice (and capPrice, seeded
+  // from it) can start at 0 — catch up as soon as a real price shows up
+  // instead of waiting for the next 10s tick.
+  useEffect(() => {
+    if (capPrice === 0 && livePrice > 0) setCapPrice(livePrice);
+  }, [livePrice, capPrice]);
 
   // 100% on the slider = full balance when buying, full holding when selling —
   // expressed in whichever unit (USDD / coin quantity) the input is currently in.
@@ -124,12 +151,37 @@ export function CoinDetailScreen() {
     setAmount(raw > 0 ? String(Number(raw.toFixed(8))) : '');
   }
 
+  // The input shows a thousands-grouped display (formatAmountInput) while
+  // `amount` itself stays a plain parseable numeric string — reformatting on
+  // every keystroke shifts the caret, so it's repositioned by counting digits
+  // typed before it rather than left to drift to the end of the field.
+  function handleAmountChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const input = e.target;
+    const rawValue = input.value;
+    const cursorPos = input.selectionStart ?? rawValue.length;
+    const digitsBeforeCursor = rawValue.slice(0, cursorPos).replace(/\D/g, '').length;
+
+    const cleaned = parseAmountInput(rawValue);
+    setAmount(cleaned);
+
+    requestAnimationFrame(() => {
+      const formatted = formatAmountInput(cleaned);
+      let count = 0;
+      let pos = formatted.length;
+      for (let i = 0; i < formatted.length; i++) {
+        if (/\d/.test(formatted[i])) count++;
+        if (count === digitsBeforeCursor) { pos = i + 1; break; }
+      }
+      input.setSelectionRange(pos, pos);
+    });
+  }
+
   async function fetchQuote(num: number) {
     try {
       const body = mode === 'usdd' ? { coinId, side, amountUsdd: num } : { coinId, side, amountCoin: num };
       const res = await api.quoteTrade(body);
       const out = side === 'buy' ? res.expectedCoinOut! : res.expectedUsddOut!;
-      setQuote({ avgPrice: res.avgPrice, priceImpactPct: res.priceImpactPct, feeAmount: res.feeAmount, out });
+      setQuote({ avgPrice: res.avgPrice, priceImpactPct: res.priceImpactPct, feeAmount: res.feeAmount, feePct: res.feePct, out });
     } catch {
       setQuote(null);
     }
@@ -173,13 +225,13 @@ export function CoinDetailScreen() {
 
       {coin && (
         <div className="flex items-center gap-3">
-          <CoinAvatar coinId={coin.id} symbol={coin.symbol} size={44} />
+          <CoinAvatar coinId={coin.id} symbol={coin.symbol} iconUrl={coin.iconUrl} size={44} />
           <div>
             <div className="flex items-baseline gap-2">
               <span className="text-lg font-bold">{coin.symbol}</span>
               <span className="text-sm text-muted">{coin.name}</span>
             </div>
-            <div className="text-xs text-muted">MCap ${formatCompact(livePrice * coin.supply)} · Supply {formatCompact(coin.supply)}</div>
+            <div className="text-xs text-muted">MCap ${formatCompact(capPrice * coin.supply)} · Supply {formatCompact(coin.supply)}</div>
           </div>
         </div>
       )}
@@ -195,40 +247,35 @@ export function CoinDetailScreen() {
 
       {holding && coin && (
         <div className="mt-3 rounded-2xl border border-border bg-card p-3 text-sm">
-          <span className="text-muted">Ваша позиция: </span>
-          {holding.amount.toFixed(6)} {coin.symbol} · {holding.pctEmission.toFixed(3)}% эмиссии ·{' '}
-          <span className={pctColorClass(holding.pnlPct)}>{formatPct(holding.pnlPct)}</span>
+          <span className="text-muted">Позиция: </span>
+          {formatQty(holding.amount, livePrice)} {coin.symbol} · {holding.pctEmission.toFixed(3)}% эмиссии
         </div>
       )}
 
       <div className="mt-4 rounded-2xl border border-border bg-card p-4">
         <div className="mb-3 flex gap-2">
           <button
-            onClick={() => setSide('buy')}
+            onClick={() => { setSide('buy'); setAmount(''); }}
             className={`flex-1 rounded-xl py-2 text-sm font-semibold transition-colors ${side === 'buy' ? 'bg-positive/20 text-positive' : 'text-muted'}`}
           >
             Купить
           </button>
           <button
-            onClick={() => setSide('sell')}
+            onClick={() => { setSide('sell'); setAmount(''); }}
             className={`flex-1 rounded-xl py-2 text-sm font-semibold transition-colors ${side === 'sell' ? 'bg-negative/20 text-negative' : 'text-muted'}`}
           >
             Продать
           </button>
         </div>
 
-        <div className="mb-2 flex items-center justify-between text-xs text-muted">
-          <span>
-            {mode === 'usdd' ? 'Сумма в USDD' : `Количество ${coin?.symbol ?? ''}`}
-          </span>
-          <button className="underline" onClick={() => { setMode(m => (m === 'usdd' ? 'coin' : 'usdd')); setAmount(''); }}>
-            переключить на {mode === 'usdd' ? coin?.symbol ?? '' : 'USDD'}
-          </button>
+        <div className="mb-2 text-xs text-muted">
+          {mode === 'usdd' ? 'Сумма в USDD' : `Количество ${coin?.symbol ?? ''}`}
         </div>
         <input
-          type="number"
-          value={amount}
-          onChange={e => setAmount(e.target.value)}
+          type="text"
+          inputMode="decimal"
+          value={formatAmountInput(amount)}
+          onChange={handleAmountChange}
           placeholder="0.00"
           className="w-full rounded-xl border border-border bg-bg px-3 py-2.5 text-lg outline-none focus:border-accent-to"
         />
@@ -280,7 +327,7 @@ export function CoinDetailScreen() {
             <div className={Math.abs(quote.priceImpactPct) > 3 ? 'text-negative' : ''}>
               Проскальзывание: {formatPct(quote.priceImpactPct, 2)}
             </div>
-            <div>Комиссия (0.2%): {formatUsdd(quote.feeAmount)}</div>
+            <div>Комиссия ({(quote.feePct * 100).toFixed(2).replace(/\.?0+$/, '')}%): {formatUsdd(quote.feeAmount)}</div>
             <div>Вы получите: {side === 'buy' ? `${quote.out.toFixed(6)} ${coin?.symbol ?? ''}` : formatUsdd(quote.out)}</div>
           </div>
         )}

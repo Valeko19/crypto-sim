@@ -1,4 +1,4 @@
-import { EngineState, CoinState, MacroMode, CANDLE_INTERVAL_MS, MAX_CANDLES, MAX_MINUTE_SAMPLES } from './state.js';
+import { EngineState, CoinState, MacroMode, CANDLE_INTERVAL_MS, MAX_CANDLES, RECENT_CHANGE_WINDOW_MS } from './state.js';
 import { MACRO_CONFIG, MacroPhase, nextPhase, fearGreedLabel } from './macroCycle.js';
 import { repriceTo, price } from './amm.js';
 import { gravityPctPerMin } from './gravity.js';
@@ -16,6 +16,33 @@ const LIVELINESS_CAP = 2.5;
 // This value is picked to still produce visible reversal CANDLES (not just ticks).
 const RELATIVE_NOISE_FACTOR = 11;
 
+// --- Sub-candle texture ---------------------------------------------------
+// The mode machine above gives the phase its large-scale structure (trend
+// legs, fakeout reversals, choppy patches). Within one continuous trend leg
+// the noise terms above still draw from a FIXED-width distribution every
+// tick, which makes candles come out too uniform (near-identical body size,
+// no wicks). Two independent, mean-zero additions fix the texture without
+// touching the mode machine, the target/homing math, or gravity:
+//
+// 1. `noiseAmpState` — a bounded, mean-reverting (Ornstein-Uhlenbeck-ish)
+//    multiplier on the noise terms, so the noise's own SCALE clusters over a
+//    ~1-2 candle timescale (calm patches vs. bursty patches) instead of every
+//    tick being drawn from the same width. Multiplying an already zero-mean
+//    noise term by a random positive scalar keeps it zero-mean (the amp state
+//    is independent of the noise draw), so this can't bias the phase target.
+// 2. A rare single-tick "stumble" — a short impulse against the coin's
+//    current drift direction, exactly cancelled on the very next tick (stored
+//    in `stumblePending`), so its net contribution across the pair of ticks
+//    is precisely zero. Landing mid-candle it reads as a wick; landing across
+//    a candle boundary it occasionally reads as one off-color candle — never
+//    a sustained reversal, since it's gone again one tick later.
+const NOISE_AMP_MEAN_REVERSION = 0.15; // per-tick pull of noiseAmpState back toward 1
+const NOISE_AMP_SHOCK = 0.14; // per-tick random shock size
+const NOISE_AMP_MIN = 0.3;
+const NOISE_AMP_MAX = 3.2;
+const STUMBLE_CHANCE_PER_TICK = 0.005; // ~once every ~3.3min per coin on average
+const STUMBLE_MAGNITUDE_RANGE: [number, number] = [2.5, 5]; // multiple of the coin's typical per-tick noise scale
+
 function randRange(min: number, max: number): number {
   return min + Math.random() * (max - min);
 }
@@ -23,6 +50,73 @@ function randRange(min: number, max: number): number {
 // Smoothed random walk in [-1,1]-ish via sum of two uniforms (cheap bell-shaped noise).
 function gaussianish(): number {
   return (Math.random() + Math.random() + Math.random() - 1.5) / 1.5;
+}
+
+// Bounded mean-reverting walk around 1.0 — see "Sub-candle texture" above.
+function updateNoiseAmpState(cs: CoinState): number {
+  const next = cs.noiseAmpState + NOISE_AMP_MEAN_REVERSION * (1 - cs.noiseAmpState) + NOISE_AMP_SHOCK * gaussianish();
+  cs.noiseAmpState = Math.max(NOISE_AMP_MIN, Math.min(NOISE_AMP_MAX, next));
+  return cs.noiseAmpState;
+}
+
+// Mean-zero single-tick counter-impulse — see "Sub-candle texture" above. Pass
+// the coin's current drift direction so the stumble opposes whatever it's
+// presently doing; returns this tick's contribution (0 most ticks). Caller is
+// responsible for handling any already-pending reversal before calling this.
+function updateStumble(cs: CoinState, driftPctPerTick: number, baseVolPerMin: number): number {
+  if (Math.random() < STUMBLE_CHANCE_PER_TICK) {
+    const trendSign = driftPctPerTick >= 0 ? 1 : -1;
+    const perTickVolScale = baseVolPerMin / Math.sqrt(60);
+    const magnitude = perTickVolScale * randRange(STUMBLE_MAGNITUDE_RANGE[0], STUMBLE_MAGNITUDE_RANGE[1]);
+    const impulse = -trendSign * magnitude;
+    cs.stumblePending = impulse; // reversed on the very next tick
+    return impulse;
+  }
+  return 0;
+}
+
+// Bear's trend segments produce a noticeably fatter tail of long single-color
+// candle streaks than every other phase. The plain per-tick stumble above
+// mostly can't fix this: it spikes and cancels one tick later, and since a
+// candle spans 5 ticks, ~80% of the time both the spike and its cancellation
+// land inside the SAME candle and net out before that candle even closes —
+// invisible as anything but a wick, never as an actual color flip. Shortening
+// bear's trend segments to compensate was tried and rejected: it measurably
+// undershot the phase's own calibrated target (the capped homing correction
+// can't always make up lost ground), which this task explicitly requires to
+// stay intact. Instead: on the specific tick that's about to CLOSE a candle,
+// with a chance that escalates once real same-color streaks have built up
+// (tracked via `sameColorStreak`), push just far enough to flip that candle's
+// close to the other side of its open — then cancel the exact same amount on
+// the next tick (the new candle's first tick), so the net effect across the
+// pair is still exactly zero, only this time reliably landing on the one
+// candle that needed to flip. Bull and the other three phases never call
+// this, so their behavior is unchanged.
+const BEAR_STREAK_GRACE = 5; // candles of the same color before any extra chance kicks in
+const BEAR_STREAK_HAZARD_RATE = 0.05; // added chance per candle past the grace streak
+const BEAR_STREAK_HAZARD_MAX = 0.55; // cap so it's a strong nudge, never a certainty
+const STREAK_FLIP_BUFFER_PCT = 0.4; // how far past zero the flip pushes, so the new color is unambiguous
+
+// Caller is responsible for handling any already-pending reversal before
+// calling this (see updateStumble above).
+function maybeBreakBearStreak(cs: CoinState, state: EngineState): number {
+  if (state.macroPhase !== 'bear') return 0;
+  const isClosingTick = state.tickCount % TICKS_PER_CANDLE === TICKS_PER_CANDLE - 1;
+  if (!isClosingTick || !cs.currentCandle) return 0;
+  const streak = cs.sameColorStreak;
+  if (streak < BEAR_STREAK_GRACE) return 0;
+  const hazard = Math.min(BEAR_STREAK_HAZARD_MAX, BEAR_STREAK_HAZARD_RATE * (streak - BEAR_STREAK_GRACE + 1));
+  if (Math.random() >= hazard) return 0;
+
+  const openPrice = cs.currentCandle.o;
+  const currentPrice = price(cs.pool);
+  const currentMovePct = (currentPrice / openPrice - 1) * 100;
+  // Push to the opposite side of zero (relative to how this candle is
+  // currently trending) plus a small buffer, so the flip is unambiguous.
+  const targetSign = currentMovePct >= 0 ? -1 : 1;
+  const impulse = -currentMovePct + targetSign * STREAK_FLIP_BUFFER_PCT;
+  cs.stumblePending = impulse; // cancelled on the new candle's first tick
+  return impulse;
 }
 
 // --- Macro drift mode machine -------------------------------------------------
@@ -56,6 +150,26 @@ function phaseTotalTicks(state: EngineState): number {
   return Math.max(1, state.macroPhaseEndTick - state.macroPhaseStartTick);
 }
 
+// Floor so trend/choppy mode amplitude never collapses toward zero just
+// because the phase's own TARGET move happens to be small (accumulation) or
+// a particular draw happens to land near it (any phase, in principle). Without
+// this, `avgRatePerMin` below — derived purely from the target log-return —
+// goes to ~0 for accumulation specifically, which then also flattens
+// relativeNoiseContribution in the main loop (it scales off the same drift),
+// leaving nothing but the tiny ambient baseline noise: a visually dead flat
+// line instead of a quiet-but-alive chop. The floor is anchored to the
+// phase's own volMultiplier (already lower for accumulation than every other
+// phase) and BTCR's ambient vol/min, so relative phase ordering (accumulation
+// quietest, euphoria/bear loudest) is preserved — it only ever raises a
+// mode's rate, never lowers a phase's naturally larger one.
+const MODE_RATE_FLOOR_FACTOR = 2.2;
+
+function modeRateFloorPctPerMin(state: EngineState): number {
+  const [volMin, volMax] = state.coins['btcr'].config.volPerMinPct;
+  const ambientVolPerMin = (volMin + volMax) / 2;
+  return ambientVolPerMin * MACRO_CONFIG[state.macroPhase].volMultiplier * MODE_RATE_FLOOR_FACTOR;
+}
+
 // Converts a target log-return, to be achieved over `ticks` ticks, into the
 // existing "%/min" drift convention used throughout the tick loop.
 function logReturnToDriftPctPerMin(logReturn: number, ticks: number): number {
@@ -71,9 +185,12 @@ function enterTrendMode(state: EngineState) {
   // "Flat average" rate the whole phase would need at a constant speed — trend
   // mode moves faster than this baseline since it isn't active 100% of the time.
   const avgRatePerMin = logReturnToDriftPctPerMin(state.macroPhaseTargetLogReturn, phaseTotalTicks(state));
+  const sign = avgRatePerMin >= 0 ? 1 : -1;
+  const magnitude = Math.max(Math.abs(avgRatePerMin), modeRateFloorPctPerMin(state));
   state.macroMode = 'trend';
+  state.macroModeStartTick = state.tickCount;
   state.macroModeEndTick = state.tickCount + durationTicks;
-  state.macroModeDriftPctPerMin = avgRatePerMin * randRange(1.0, 2.2);
+  state.macroModeDriftPctPerMin = sign * magnitude * randRange(1.0, 2.2);
 }
 
 function enterCounterMode(state: EngineState) {
@@ -85,6 +202,7 @@ function enterCounterMode(state: EngineState) {
                                      : 1 / randRange(1 - COUNTER_MOVE_RANGE[1], 1 - COUNTER_MOVE_RANGE[0]);
   const counterLogReturn = Math.log(swingMultiplier);
   state.macroMode = 'counter';
+  state.macroModeStartTick = state.tickCount;
   state.macroModeEndTick = state.tickCount + durationTicks;
   state.macroModeDriftPctPerMin = logReturnToDriftPctPerMin(counterLogReturn, durationTicks);
 }
@@ -92,9 +210,11 @@ function enterCounterMode(state: EngineState) {
 function enterChoppyMode(state: EngineState) {
   const durationTicks = modeDurationTicks(state, CHOPPY_FRAC_RANGE);
   const avgRatePerMin = Math.abs(logReturnToDriftPctPerMin(state.macroPhaseTargetLogReturn, phaseTotalTicks(state)));
+  const magnitude = Math.max(avgRatePerMin, modeRateFloorPctPerMin(state));
   state.macroMode = 'choppy';
+  state.macroModeStartTick = state.tickCount;
   state.macroModeEndTick = state.tickCount + durationTicks;
-  state.macroChoppyAmplitudePctPerMin = avgRatePerMin * randRange(1.6, 3.0);
+  state.macroChoppyAmplitudePctPerMin = magnitude * randRange(1.6, 3.0);
   state.macroModeDriftPctPerMin = state.macroChoppyAmplitudePctPerMin * gaussianish();
 }
 
@@ -256,6 +376,9 @@ function updateCandle(cs: CoinState, state: EngineState) {
     // exactly like every other tick within the candle.
     const openPrice = cs.currentCandle ? cs.currentCandle.c : p;
     if (cs.currentCandle) {
+      const closedColor: 'red' | 'green' = cs.currentCandle.c >= cs.currentCandle.o ? 'green' : 'red';
+      cs.sameColorStreak = closedColor === cs.lastCandleColor ? cs.sameColorStreak + 1 : 1;
+      cs.lastCandleColor = closedColor;
       cs.candles.push(cs.currentCandle);
       if (cs.candles.length > MAX_CANDLES) cs.candles.shift();
     }
@@ -267,12 +390,13 @@ function updateCandle(cs: CoinState, state: EngineState) {
   }
 }
 
-function updateMinuteHistory(cs: CoinState, now: number) {
-  const last = cs.minuteHistory[cs.minuteHistory.length - 1];
-  if (now - last.t >= 60_000) {
-    cs.minuteHistory.push({ t: now, p: price(cs.pool) });
-    if (cs.minuteHistory.length > MAX_MINUTE_SAMPLES) cs.minuteHistory.shift();
-  }
+// Dense (every-tick) rolling window, same technique as fiveMinHistory below —
+// the oldest surviving sample approximates "price RECENT_CHANGE_WINDOW_MS ago"
+// closely regardless of tick timing, unlike a once-a-minute sampled history.
+function updateRecentHistory(cs: CoinState, now: number) {
+  const cutoff = now - RECENT_CHANGE_WINDOW_MS;
+  cs.recentHistory = cs.recentHistory.filter(s => s.t >= cutoff);
+  cs.recentHistory.push({ t: now, p: price(cs.pool) });
 }
 
 export function tick(state: EngineState) {
@@ -305,24 +429,41 @@ export function tick(state: EngineState) {
 
     const [volMin, volMax] = cfg.volPerMinPct;
     const baseVolPerMin = randRange(volMin, volMax);
-    const baseNoiseContribution = (gaussianish() * baseVolPerMin / Math.sqrt(60)) * macroVolMult * cs.livelinessMultiplier;
+    // Amplitude itself clusters tick-to-tick (see updateNoiseAmpState) instead
+    // of every tick drawing from the same fixed width — this is what makes
+    // candle bodies/wicks vary in size instead of forming an even staircase.
+    const noiseAmp = updateNoiseAmpState(cs);
+    const baseNoiseContribution = (gaussianish() * baseVolPerMin / Math.sqrt(60)) * macroVolMult * cs.livelinessMultiplier * noiseAmp;
     // Noise proportional to the CURRENT drift magnitude, on top of the small
     // ambient baseline above. A fixed vol/min baseline reads as a flat line next
     // to a phase drift strong enough to move the price 50-80%+ in minutes — this
     // term keeps the chart visibly jagged (false breakouts, wobble) at any drift
     // scale without needing separate noise tuning per phase/category.
-    const relativeNoiseContribution = RELATIVE_NOISE_FACTOR * Math.abs(driftPctPerTick) * gaussianish();
+    const relativeNoiseContribution = RELATIVE_NOISE_FACTOR * Math.abs(driftPctPerTick) * gaussianish() * noiseAmp;
+    // Rare mean-zero single-tick stumble against the current direction — see
+    // "Sub-candle texture" above; net zero across the two ticks it spans. Any
+    // already-pending reversal takes priority; otherwise bear gets first shot
+    // at a targeted streak-breaking flip before falling back to the ambient one.
+    let stumbleContribution: number;
+    if (cs.stumblePending !== 0) {
+      stumbleContribution = -cs.stumblePending;
+      cs.stumblePending = 0;
+    } else {
+      stumbleContribution = maybeBreakBearStreak(cs, state);
+      if (stumbleContribution === 0) stumbleContribution = updateStumble(cs, driftPctPerTick, baseVolPerMin);
+    }
     // Long-horizon anchor pull (see gravity.ts) — computed after the relative
     // noise term so it isn't fed into that term's scaling, and kept fully
     // independent of the macro phase/mode machine above.
     const gravityContribution = gravityPctPerMin(cs) / 60;
-    const totalPct = driftPctPerTick + baseNoiseContribution + relativeNoiseContribution + gravityContribution;
+    const totalPct = driftPctPerTick + baseNoiseContribution + relativeNoiseContribution + stumbleContribution + gravityContribution;
 
     cs.lastTick = {
       macroDriftPct: macroDriftContribution,
       localDriftPct: localDriftContribution,
       baseNoisePct: baseNoiseContribution,
       relativeNoisePct: relativeNoiseContribution,
+      stumblePct: stumbleContribution,
       gravityPct: gravityContribution,
       totalPct,
     };
@@ -333,7 +474,7 @@ export function tick(state: EngineState) {
 
     updateLiveliness(cs, now);
     updateCandle(cs, state);
-    updateMinuteHistory(cs, now);
+    updateRecentHistory(cs, now);
   }
 
   // Fear & greed: phase base, nudged by BTCR's recent (5 min window) momentum.

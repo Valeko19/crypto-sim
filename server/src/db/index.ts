@@ -51,5 +51,30 @@ export async function initDb() {
       coin_reserve DOUBLE PRECISION NOT NULL,
       usdd_reserve DOUBLE PRECISION NOT NULL
     );
+
+    -- Per-coin accumulator fed by that coin's own trade fees (see tradeFeePct
+    -- in config/coins.ts) instead of the fee just vanishing; drained
+    -- periodically to that coin's stakers — see engine/staking.ts.
+    CREATE TABLE IF NOT EXISTS coin_fee_pools (
+      coin_id TEXT PRIMARY KEY,
+      pool_usdd DOUBLE PRECISION NOT NULL DEFAULT 0
+    );
+
+    -- Staking never moves coins out of player_holdings — a position only
+    -- *reserves* part of the holding from being sold (see reservedStakedAmount
+    -- in db/queries.ts). Real wall-clock time throughout (staked_at/lock_until/
+    -- unstake_available_at), not game ticks.
+    CREATE TABLE IF NOT EXISTS staking_positions (
+      id TEXT PRIMARY KEY,
+      player_id TEXT NOT NULL REFERENCES players(id),
+      coin_id TEXT NOT NULL,
+      amount DOUBLE PRECISION NOT NULL,
+      mode TEXT NOT NULL,
+      staked_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      lock_until TIMESTAMPTZ,
+      unstake_requested_at TIMESTAMPTZ,
+      unstake_available_at TIMESTAMPTZ,
+      pending_rewards DOUBLE PRECISION NOT NULL DEFAULT 0
+    );
   `);
 }

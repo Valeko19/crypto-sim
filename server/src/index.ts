@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import http from 'node:http';
-import { createInitialState, change24hPct, Candle } from './engine/state.js';
+import { createInitialState, recentChangePct, Candle } from './engine/state.js';
 import { startEngineLoop, fearGreedLabel, phaseProgress } from './engine/tick.js';
 import { MACRO_CONFIG } from './engine/macroCycle.js';
 import { price } from './engine/amm.js';
@@ -12,6 +12,8 @@ import { seedNpcBotsIfNeeded, driftNpcBots } from './npc/bots.js';
 import { createRouter } from './api/routes.js';
 import { createWsServer } from './ws/server.js';
 import { computePortfolio } from './api/helpers.js';
+import { distributeStakingRewards } from './engine/staking.js';
+import { STAKING_DISTRIBUTION_INTERVAL_MS } from './config/staking.js';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 8787;
 
@@ -72,7 +74,7 @@ async function main() {
       return {
         id: cfg.id,
         price: price(cs.pool),
-        change24hPct: change24hPct(cs),
+        changePct: recentChangePct(cs),
       };
     });
     broadcast('price_updates', {
@@ -107,6 +109,10 @@ async function main() {
   setInterval(() => {
     persistPoolSnapshots().catch(() => {});
   }, 10_000);
+
+  setInterval(() => {
+    distributeStakingRewards(state).catch(() => {});
+  }, STAKING_DISTRIBUTION_INTERVAL_MS);
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.on(signal, () => {

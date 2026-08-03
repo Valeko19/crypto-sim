@@ -1,19 +1,25 @@
 import { Router } from 'express';
-import { EngineState, change24hPct } from '../engine/state.js';
+import { EngineState, recentChangePct } from '../engine/state.js';
 import { buyWithUsdd, sellCoin, quoteBuy, quoteSell, price } from '../engine/amm.js';
 import { forcePhase, fearGreedLabel, phaseProgress } from '../engine/tick.js';
 import { justifiedPrice } from '../engine/gravity.js';
 import { MACRO_CONFIG, MACRO_ORDER, MacroPhase } from '../engine/macroCycle.js';
-import { COINS, COIN_MAP, TRADE_FEE_PCT, MIN_TRADE_USDD, sectionOf } from '../config/coins.js';
+import { COINS, COIN_MAP, tradeFeePct, MIN_TRADE_USDD, sectionOf } from '../config/coins.js';
 import { RANKS } from '../config/ranks.js';
 import { DAILY_BONUS_AMOUNT, EMISSION_THRESHOLDS } from '../config/quests.js';
 import { SHOP_PACKAGES, STARS_TO_USDD_RATE } from '../config/shop.js';
 import { remainingToday, recordSpend } from './shopState.js';
 import {
   ensureLocalPlayer, getPlayer, LOCAL_PLAYER_ID, applyBuy, applySell, getHolding,
-  getQuestProgress, claimQuestRow,
+  getQuestProgress, claimQuestRow, addToFeePool, reservedStakedAmount,
+  createStakingPosition, getPositionById, requestUnstakePosition, deleteStakingPosition,
+  claimCoinRewards, isPositionReserved,
 } from '../db/queries.js';
-import { computePortfolio, computeLeaderboard, findEmissionLeader } from './helpers.js';
+import { computePortfolio, computeLeaderboard, findEmissionLeader, computeStaking } from './helpers.js';
+import {
+  StakingMode, STAKING_LOCK_DURATION_MS, STAKING_FLEXIBLE_COOLDOWN_MS,
+  STAKING_FLEXIBLE_MULTIPLIER, STAKING_LOCKED_MULTIPLIER,
+} from '../config/staking.js';
 
 export function createRouter(state: EngineState) {
   const router = Router();
@@ -26,11 +32,12 @@ export function createRouter(state: EngineState) {
         id: cfg.id,
         symbol: cfg.symbol,
         name: cfg.name,
+        iconUrl: cfg.iconUrl,
         section: sectionOf(cfg.category),
         price: p,
         marketCap: p * cfg.emission,
         supply: cfg.emission,
-        change24hPct: change24hPct(cs),
+        changePct: recentChangePct(cs),
         pctCapturedByPlayers: 0, // filled in below if holdings exist; kept simple for the list view
         livelinessMultiplier: cs.livelinessMultiplier, // diagnostic — noise amplification currently in effect
       };
@@ -61,16 +68,16 @@ export function createRouter(state: EngineState) {
     try {
       if (side === 'buy') {
         const usddIn = Number(amountUsdd);
-        const feeAmount = usddIn * TRADE_FEE_PCT;
+        const feeAmount = usddIn * tradeFeePct(coinId);
         const q = quoteBuy(cs.pool, usddIn - feeAmount);
-        res.json({ expectedCoinOut: q.coinOut, avgPrice: q.avgPrice, priceImpactPct: q.priceImpactPct, feeAmount });
+        res.json({ expectedCoinOut: q.coinOut, avgPrice: q.avgPrice, priceImpactPct: q.priceImpactPct, feeAmount, feePct: tradeFeePct(coinId) });
       } else {
         let coinIn: number;
         if (amountCoin != null) coinIn = Number(amountCoin);
         else coinIn = Number(amountUsdd) / price(cs.pool);
         const q = quoteSell(cs.pool, coinIn);
-        const feeAmount = q.usddOut * TRADE_FEE_PCT;
-        res.json({ expectedUsddOut: q.usddOut - feeAmount, avgPrice: q.avgPrice, priceImpactPct: q.priceImpactPct, feeAmount });
+        const feeAmount = q.usddOut * tradeFeePct(coinId);
+        res.json({ expectedUsddOut: q.usddOut - feeAmount, avgPrice: q.avgPrice, priceImpactPct: q.priceImpactPct, feeAmount, feePct: tradeFeePct(coinId) });
       }
     } catch (e) {
       res.status(400).json({ error: 'quote failed' });
@@ -90,10 +97,11 @@ export function createRouter(state: EngineState) {
       const usddIn = Number(amountUsdd);
       if (!usddIn || usddIn < MIN_TRADE_USDD) return res.status(400).json({ error: `minimum trade is ${MIN_TRADE_USDD} USDD` });
       if (usddIn > player.usdd_balance) return res.status(400).json({ error: 'insufficient balance' });
-      const fee = usddIn * TRADE_FEE_PCT;
+      const fee = usddIn * tradeFeePct(coinId);
       const netIn = usddIn - fee;
       const result = buyWithUsdd(cs.pool, netIn);
       await applyBuy(LOCAL_PLAYER_ID, coinId, result.coinAmount, usddIn, result.avgPrice);
+      await addToFeePool(coinId, fee);
       cs.playerOwnedCoins += result.coinAmount;
       return res.json({ ...result, fee });
     } else if (side === 'sell') {
@@ -102,12 +110,16 @@ export function createRouter(state: EngineState) {
       let coinIn: number;
       if (amountCoin != null) coinIn = Number(amountCoin);
       else coinIn = Number(amountUsdd) / price(cs.pool);
-      coinIn = Math.min(coinIn, holding.amount);
+      const reserved = await reservedStakedAmount(LOCAL_PLAYER_ID, coinId);
+      const sellable = holding.amount - reserved;
+      if (coinIn > sellable) return res.status(400).json({ error: 'coins are staked and cannot be sold' });
+      coinIn = Math.min(coinIn, sellable);
       if (coinIn <= 0) return res.status(400).json({ error: 'invalid amount' });
       const result = sellCoin(cs.pool, coinIn);
-      const fee = result.usddAmount * TRADE_FEE_PCT;
+      const fee = result.usddAmount * tradeFeePct(coinId);
       const netOut = result.usddAmount - fee;
       await applySell(LOCAL_PLAYER_ID, coinId, coinIn, netOut, result.avgPrice);
+      await addToFeePool(coinId, fee);
       cs.playerOwnedCoins = Math.max(0, cs.playerOwnedCoins - coinIn);
       return res.json({ ...result, usddAmount: netOut, fee });
     }
@@ -118,6 +130,79 @@ export function createRouter(state: EngineState) {
     await ensureLocalPlayer();
     const portfolio = await computePortfolio(state, LOCAL_PLAYER_ID);
     res.json(portfolio);
+  });
+
+  router.get('/staking', async (req, res) => {
+    await ensureLocalPlayer();
+    const coins = await computeStaking(state, LOCAL_PLAYER_ID);
+    res.json({
+      coins,
+      config: {
+        flexibleMultiplier: STAKING_FLEXIBLE_MULTIPLIER,
+        lockedMultiplier: STAKING_LOCKED_MULTIPLIER,
+        lockDurationMs: STAKING_LOCK_DURATION_MS,
+        flexibleCooldownMs: STAKING_FLEXIBLE_COOLDOWN_MS,
+      },
+    });
+  });
+
+  router.post('/staking/stake', async (req, res) => {
+    await ensureLocalPlayer();
+    const { coinId, amount, mode } = req.body as { coinId: string; amount: number; mode: StakingMode };
+    const cfg = COIN_MAP[coinId];
+    if (!cfg) return res.status(404).json({ error: 'coin not found' });
+    if (mode !== 'flexible' && mode !== 'locked') return res.status(400).json({ error: 'invalid mode' });
+    const stakeAmount = Number(amount);
+    if (!stakeAmount || stakeAmount <= 0) return res.status(400).json({ error: 'invalid amount' });
+
+    const holding = await getHolding(LOCAL_PLAYER_ID, coinId);
+    const reserved = await reservedStakedAmount(LOCAL_PLAYER_ID, coinId);
+    const available = (holding?.amount ?? 0) - reserved;
+    if (stakeAmount > available) return res.status(400).json({ error: 'insufficient sellable balance' });
+
+    const lockUntil = mode === 'locked' ? new Date(Date.now() + STAKING_LOCK_DURATION_MS) : null;
+    const position = await createStakingPosition(LOCAL_PLAYER_ID, coinId, stakeAmount, mode, lockUntil);
+    res.json({ success: true, position });
+  });
+
+  router.post('/staking/request-unstake', async (req, res) => {
+    await ensureLocalPlayer();
+    const { positionId } = req.body as { positionId: string };
+    const position = await getPositionById(positionId);
+    if (!position || position.player_id !== LOCAL_PLAYER_ID) return res.status(404).json({ error: 'position not found' });
+    if (position.mode !== 'flexible') return res.status(400).json({ error: 'only flexible positions can request unstake' });
+    if (position.unstake_requested_at) return res.status(400).json({ error: 'unstake already requested' });
+
+    const availableAt = new Date(Date.now() + STAKING_FLEXIBLE_COOLDOWN_MS);
+    await requestUnstakePosition(positionId, availableAt);
+    res.json({ success: true, unstakeAvailableAt: availableAt.toISOString() });
+  });
+
+  router.post('/staking/withdraw', async (req, res) => {
+    await ensureLocalPlayer();
+    const { positionId } = req.body as { positionId: string };
+    const position = await getPositionById(positionId);
+    if (!position || position.player_id !== LOCAL_PLAYER_ID) return res.status(404).json({ error: 'position not found' });
+    if (isPositionReserved(position, Date.now())) return res.status(400).json({ error: 'position is still locked/cooling down' });
+
+    if (position.pending_rewards > 0) {
+      const { db } = await import('../db/index.js');
+      await db.query('UPDATE players SET usdd_balance = usdd_balance + $1 WHERE id = $2', [position.pending_rewards, LOCAL_PLAYER_ID]);
+    }
+    await deleteStakingPosition(positionId);
+    res.json({ success: true });
+  });
+
+  router.post('/staking/claim', async (req, res) => {
+    await ensureLocalPlayer();
+    const { coinId } = req.body as { coinId: string };
+    if (!COIN_MAP[coinId]) return res.status(404).json({ error: 'coin not found' });
+    const amount = await claimCoinRewards(LOCAL_PLAYER_ID, coinId);
+    if (amount > 0) {
+      const { db } = await import('../db/index.js');
+      await db.query('UPDATE players SET usdd_balance = usdd_balance + $1 WHERE id = $2', [amount, LOCAL_PLAYER_ID]);
+    }
+    res.json({ success: true, amount });
   });
 
   router.get('/quests', async (req, res) => {
@@ -208,9 +293,21 @@ export function createRouter(state: EngineState) {
   // STUB: instantly credits USDD instead of charging real Telegram Stars.
   // Replace with a real Invoice API call (processStarPayment) before launch.
   router.post('/shop/purchase', async (req, res) => {
-    const { starsAmount } = req.body as { starsAmount: number };
+    const { starsAmount, packageId } = req.body as { starsAmount: number; packageId?: string };
     if (!starsAmount || starsAmount <= 0) return res.status(400).json({ error: 'invalid amount' });
-    const usddAmount = starsAmount * STARS_TO_USDD_RATE;
+    // Package purchases are priced server-side from the package's own bonused
+    // usddAmount, not starsAmount*rate — that flat formula ignores the bonus
+    // entirely and would silently under-credit every discounted package.
+    // starsAmount must still match the package exactly (server-authoritative
+    // pricing — never trust a client-supplied amount for what to credit).
+    let usddAmount: number;
+    if (packageId) {
+      const pkg = SHOP_PACKAGES.find(p => p.id === packageId);
+      if (!pkg || pkg.stars !== starsAmount) return res.status(400).json({ error: 'invalid package' });
+      usddAmount = pkg.usddAmount;
+    } else {
+      usddAmount = starsAmount * STARS_TO_USDD_RATE;
+    }
     if (usddAmount > remainingToday()) return res.status(400).json({ error: 'daily limit exceeded' });
 
     await ensureLocalPlayer();

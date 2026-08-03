@@ -13,11 +13,11 @@ export function ShopScreen() {
   }
   useEffect(load, []);
 
-  async function buy(starsAmount: number) {
+  async function buy(starsAmount: number, packageId?: string) {
     setBusy(true);
     setMessage(null);
     try {
-      const res = await api.purchaseShop(starsAmount);
+      const res = await api.purchaseShop(starsAmount, packageId);
       setMessage(`Зачислено ${formatUsdd(res.usddCredited)}`);
       load();
     } catch (e: any) {
@@ -72,7 +72,7 @@ export function ShopScreen() {
           <button
             key={pkg.id}
             disabled={busy}
-            onClick={() => buy(pkg.stars)}
+            onClick={() => buy(pkg.stars, pkg.id)}
             className={`relative rounded-2xl border p-4 text-left transition-colors ${
               pkg.popular ? 'border-accent-to/60 bg-card-light' : 'border-border bg-card'
             } disabled:opacity-40`}

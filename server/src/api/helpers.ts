@@ -1,13 +1,18 @@
 import { EngineState } from '../engine/state.js';
 import { price } from '../engine/amm.js';
-import { COIN_MAP } from '../config/coins.js';
+import { COINS, COIN_MAP } from '../config/coins.js';
 import { rankForNetWorth, leagueIndex, RANKS } from '../config/ranks.js';
-import { getHoldings, getPlayer, listNpcBots, LOCAL_PLAYER_ID } from '../db/queries.js';
+import {
+  getHoldings, getPlayer, listNpcBots, LOCAL_PLAYER_ID,
+  getStakingPositions, getFeePool, getAllOpenStakingPositions, isPositionReserved,
+} from '../db/queries.js';
+import { STAKING_LOCKED_MULTIPLIER, STAKING_FLEXIBLE_MULTIPLIER } from '../config/staking.js';
 
 export interface HoldingView {
   coinId: string;
   symbol: string;
   name: string;
+  iconUrl: string;
   amount: number;
   value: number;
   pctEmission: number;
@@ -40,6 +45,7 @@ export async function computePortfolio(state: EngineState, playerId: string): Pr
       coinId: h.coin_id,
       symbol: cfg.symbol,
       name: cfg.name,
+      iconUrl: cfg.iconUrl,
       amount: h.amount,
       value,
       pctEmission: (h.amount / cfg.emission) * 100,
@@ -105,4 +111,89 @@ export function findEmissionLeader(state: EngineState, holdings: HoldingView[]):
     if (h.pctEmission > best.pctEmission) best = h;
   }
   return { coinId: best.coinId, pct: best.pctEmission };
+}
+
+export interface StakingPositionView {
+  id: string;
+  amount: number;
+  mode: 'flexible' | 'locked';
+  stakedAt: string;
+  lockUntil: string | null;
+  unstakeRequestedAt: string | null;
+  unstakeAvailableAt: string | null;
+  reserved: boolean; // still locked-in / cooling down — can't sell or withdraw
+  effectiveMultiplier: number;
+  pendingRewards: number;
+}
+
+export interface StakingCoinView {
+  coinId: string;
+  symbol: string;
+  name: string;
+  iconUrl: string;
+  currentPrice: number;
+  holdingAmount: number;
+  sellableAmount: number;
+  poolUsdd: number;
+  totalStakedAllPlayers: number;
+  positions: StakingPositionView[];
+  pendingRewards: number;
+}
+
+export async function computeStaking(state: EngineState, playerId: string): Promise<StakingCoinView[]> {
+  const holdingRows = await getHoldings(playerId);
+  const holdingByCoinId = new Map(holdingRows.map(h => [h.coin_id, h.amount]));
+  const playerPositions = await getStakingPositions(playerId);
+  const allPositions = await getAllOpenStakingPositions();
+  const now = Date.now();
+
+  const totalStakedByCoin = new Map<string, number>();
+  for (const p of allPositions) {
+    totalStakedByCoin.set(p.coin_id, (totalStakedByCoin.get(p.coin_id) ?? 0) + p.amount);
+  }
+
+  const result: StakingCoinView[] = [];
+  for (const cfg of COINS) {
+    const positionsForCoin = playerPositions.filter(p => p.coin_id === cfg.id);
+    const holdingAmount = holdingByCoinId.get(cfg.id) ?? 0;
+    const reservedAmount = positionsForCoin
+      .filter(p => isPositionReserved(p, now))
+      .reduce((sum, p) => sum + p.amount, 0);
+    const poolUsdd = await getFeePool(cfg.id);
+
+    const positions: StakingPositionView[] = positionsForCoin.map(p => {
+      const reserved = isPositionReserved(p, now);
+      const effectiveMultiplier =
+        p.mode === 'locked' && p.lock_until && new Date(p.lock_until).getTime() > now
+          ? STAKING_LOCKED_MULTIPLIER
+          : STAKING_FLEXIBLE_MULTIPLIER;
+      return {
+        id: p.id,
+        amount: p.amount,
+        mode: p.mode,
+        stakedAt: p.staked_at,
+        lockUntil: p.lock_until,
+        unstakeRequestedAt: p.unstake_requested_at,
+        unstakeAvailableAt: p.unstake_available_at,
+        reserved,
+        effectiveMultiplier,
+        pendingRewards: p.pending_rewards,
+      };
+    });
+
+    result.push({
+      coinId: cfg.id,
+      symbol: cfg.symbol,
+      name: cfg.name,
+      iconUrl: cfg.iconUrl,
+      currentPrice: price(state.coins[cfg.id].pool),
+      holdingAmount,
+      sellableAmount: Math.max(0, holdingAmount - reservedAmount),
+      poolUsdd,
+      totalStakedAllPlayers: totalStakedByCoin.get(cfg.id) ?? 0,
+      positions,
+      pendingRewards: positions.reduce((sum, p) => sum + p.pendingRewards, 0),
+    });
+  }
+  return result;
 }

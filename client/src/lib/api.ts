@@ -2,11 +2,12 @@ export interface CoinListItem {
   id: string;
   symbol: string;
   name: string;
+  iconUrl: string;
   section: 'top1' | 'alt' | 'meme';
   price: number;
   marketCap: number;
   supply: number;
-  change24hPct: number;
+  changePct: number; // rolling change over the last few minutes, not 24h
 }
 
 export interface MarketStatus {
@@ -23,7 +24,7 @@ export interface MarketStatus {
 export interface Candle { t: number; o: number; h: number; l: number; c: number; }
 
 export interface HoldingView {
-  coinId: string; symbol: string; name: string; amount: number; value: number;
+  coinId: string; symbol: string; name: string; iconUrl: string; amount: number; value: number;
   pctEmission: number; pnlPct: number; avgBuyPrice: number; currentPrice: number;
 }
 
@@ -50,6 +51,27 @@ export interface LeaderboardEntry { place: number; username: string; netWorth: n
 export interface LeaderboardView { league: string; entries: LeaderboardEntry[]; minCapital: number; totalPlayers: number; }
 export interface RankInfo { name: string; min: number; max: number | null; }
 
+export type StakingMode = 'flexible' | 'locked';
+
+export interface StakingPositionView {
+  id: string;
+  amount: number;
+  mode: StakingMode;
+  stakedAt: string;
+  lockUntil: string | null;
+  unstakeRequestedAt: string | null;
+  unstakeAvailableAt: string | null;
+  reserved: boolean;
+  effectiveMultiplier: number;
+  pendingRewards: number;
+}
+
+export interface StakingCoinView {
+  coinId: string; symbol: string; name: string; iconUrl: string; currentPrice: number;
+  holdingAmount: number; sellableAmount: number; poolUsdd: number; totalStakedAllPlayers: number;
+  positions: StakingPositionView[]; pendingRewards: number;
+}
+
 async function req<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
     headers: { 'Content-Type': 'application/json' },
@@ -71,13 +93,13 @@ export const api = {
     method: 'POST', body: JSON.stringify({ questId }),
   }),
   getShopStatus: () => req<ShopStatus>('/shop/status'),
-  purchaseShop: (starsAmount: number) => req<{ success: boolean; usddCredited: number; remainingToday: number }>('/shop/purchase', {
-    method: 'POST', body: JSON.stringify({ starsAmount }),
+  purchaseShop: (starsAmount: number, packageId?: string) => req<{ success: boolean; usddCredited: number; remainingToday: number }>('/shop/purchase', {
+    method: 'POST', body: JSON.stringify({ starsAmount, packageId }),
   }),
   getLeaderboard: (league: string) => req<LeaderboardView>(`/leaderboard?league=${encodeURIComponent(league)}`),
   getRanks: () => req<{ ranks: RankInfo[] }>('/ranks'),
   quoteTrade: (body: { coinId: string; side: 'buy' | 'sell'; amountUsdd?: number; amountCoin?: number }) =>
-    req<{ expectedCoinOut?: number; expectedUsddOut?: number; avgPrice: number; priceImpactPct: number; feeAmount: number }>(
+    req<{ expectedCoinOut?: number; expectedUsddOut?: number; avgPrice: number; priceImpactPct: number; feeAmount: number; feePct: number }>(
       '/trade/quote', { method: 'POST', body: JSON.stringify(body) }
     ),
   trade: (body: { coinId: string; side: 'buy' | 'sell'; amountUsdd?: number; amountCoin?: number }) =>
@@ -87,4 +109,20 @@ export const api = {
   forceDebugPhase: (phase: string) => req<{ success: boolean }>('/debug/phase', {
     method: 'POST', body: JSON.stringify({ phase }),
   }),
+  getStaking: () => req<{
+    coins: StakingCoinView[];
+    config: { flexibleMultiplier: number; lockedMultiplier: number; lockDurationMs: number; flexibleCooldownMs: number };
+  }>('/staking'),
+  stake: (coinId: string, amount: number, mode: StakingMode) => req<{ success: boolean; position: StakingPositionView }>(
+    '/staking/stake', { method: 'POST', body: JSON.stringify({ coinId, amount, mode }) }
+  ),
+  requestUnstake: (positionId: string) => req<{ success: boolean; unstakeAvailableAt: string }>(
+    '/staking/request-unstake', { method: 'POST', body: JSON.stringify({ positionId }) }
+  ),
+  withdrawStaking: (positionId: string) => req<{ success: boolean }>(
+    '/staking/withdraw', { method: 'POST', body: JSON.stringify({ positionId }) }
+  ),
+  claimStakingRewards: (coinId: string) => req<{ success: boolean; amount: number }>(
+    '/staking/claim', { method: 'POST', body: JSON.stringify({ coinId }) }
+  ),
 };

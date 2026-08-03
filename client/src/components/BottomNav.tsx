@@ -1,11 +1,11 @@
 import { NavLink } from 'react-router-dom';
-import { TradeIcon, QuestsIcon, ShopIcon, LeaderboardIcon, ProfileIcon } from './icons';
+import { TradeIcon, QuestsIcon, ShopIcon, FarmingIcon, ProfileIcon } from './icons';
 
 const TABS = [
   { to: '/market', label: 'Торговля', Icon: TradeIcon },
   { to: '/quests', label: 'Задания', Icon: QuestsIcon },
   { to: '/shop', label: 'Магазин', Icon: ShopIcon },
-  { to: '/leaderboard', label: 'Рейтинг', Icon: LeaderboardIcon },
+  { to: '/farming', label: 'Фарминг', Icon: FarmingIcon },
   { to: '/profile', label: 'Профиль', Icon: ProfileIcon },
 ];
 

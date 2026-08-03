@@ -40,6 +40,17 @@ export function LeaderboardIcon(props: IconProps) {
   );
 }
 
+export function FarmingIcon(props: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" strokeWidth={1.8} stroke="currentColor" {...props}>
+      <path d="M12 20V10" strokeLinecap="round" />
+      <path d="M12 13c0-3 2-5.5 5.5-6-0.3 3.5-2.5 5.5-5.5 6Z" strokeLinejoin="round" />
+      <path d="M12 16c0-2.5-1.7-4.5-4.5-5 .2 2.8 2 4.5 4.5 5Z" strokeLinejoin="round" />
+      <path d="M7 20h10" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export function ProfileIcon(props: IconProps) {
   return (
     <svg viewBox="0 0 24 24" fill="none" strokeWidth={1.8} stroke="currentColor" {...props}>

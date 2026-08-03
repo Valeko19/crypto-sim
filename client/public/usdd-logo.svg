@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="320" viewBox="0 0 240 240">
+  <defs>
+    <linearGradient id="g1a" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="oklch(0.58 0.14 155)"></stop>
+      <stop offset="100%" stop-color="oklch(0.4 0.13 160)"></stop>
+    </linearGradient>
+  </defs>
+  <circle cx="120" cy="120" r="112" fill="url(#g1a)" stroke="oklch(0.75 0.08 155)" stroke-width="5"></circle>
+  <circle cx="120" cy="120" r="96" fill="none" stroke="oklch(0.9 0.03 155 / 0.35)" stroke-width="2"></circle>
+  <text x="120" y="138" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="58" font-weight="700" fill="oklch(0.98 0.01 155)" letter-spacing="-2">USDD</text>
+</svg>

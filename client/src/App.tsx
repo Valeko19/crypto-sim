@@ -6,6 +6,7 @@ import { QuestsScreen } from './screens/QuestsScreen';
 import { ShopScreen } from './screens/ShopScreen';
 import { LeaderboardScreen } from './screens/LeaderboardScreen';
 import { ProfileScreen } from './screens/ProfileScreen';
+import { FarmingScreen } from './screens/FarmingScreen';
 
 export default function App() {
   return (
@@ -17,6 +18,7 @@ export default function App() {
         <Route path="/quests" element={<QuestsScreen />} />
         <Route path="/shop" element={<ShopScreen />} />
         <Route path="/leaderboard" element={<LeaderboardScreen />} />
+        <Route path="/farming" element={<FarmingScreen />} />
         <Route path="/profile" element={<ProfileScreen />} />
       </Routes>
       <BottomNav />

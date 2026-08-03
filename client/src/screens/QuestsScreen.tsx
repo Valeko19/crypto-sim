@@ -41,9 +41,7 @@ export function QuestsScreen() {
         </div>
         <div className="flex-1">
           <div className="font-semibold">Ежедневный бонус</div>
-          <div className={`text-sm ${!dailyBonus.available ? 'text-positive' : 'text-muted'}`}>
-            {!dailyBonus.available ? 'Выполнено' : 'Доступно раз в 24 часа'}
-          </div>
+          {!dailyBonus.available && <div className="text-sm text-positive">Выполнено</div>}
         </div>
         <button
           disabled={!dailyBonus.available || busyId === 'daily_bonus'}
@@ -55,12 +53,7 @@ export function QuestsScreen() {
       </div>
 
       <h2 className="mb-1 text-sm font-medium text-muted">Захват эмиссии</h2>
-      {emissionCapture.leaderCoinId ? (
-        <p className="mb-3 text-sm text-muted">
-          Лидирует: <span className="font-semibold text-white">{emissionCapture.leaderSymbol}</span> ·{' '}
-          {emissionCapture.leaderPct.toFixed(3)}% эмиссии
-        </p>
-      ) : (
+      {!emissionCapture.leaderCoinId && (
         <p className="mb-3 text-sm text-muted">У вас пока нет позиций — купите монету, чтобы начать захват эмиссии.</p>
       )}
 
@@ -80,7 +73,7 @@ export function QuestsScreen() {
               <div className="min-w-0 flex-1">
                 <div className="font-semibold">Выкупить {step.threshold}% эмиссии монеты</div>
                 <div className={`text-sm ${step.claimed ? 'text-positive' : step.met ? 'text-positive' : 'text-muted'}`}>
-                  {step.claimed ? `Взято на ${step.coinSymbol}` : step.met ? `Готово на ${step.coinSymbol}` : 'Недостаточно'}
+                  {step.claimed ? 'Взято' : step.met ? 'Готово' : 'Недостаточно'}
                 </div>
               </div>
               <button

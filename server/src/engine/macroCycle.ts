@@ -33,8 +33,23 @@ export interface MacroPhaseConfig {
 // a bull phase, on ANY phase duration — alts/memes then amplify further via beta.
 // The organic, noisy path to that target (false moves, reversal candles) comes
 // from the separate relative-noise term in tick.ts, not from this drift range.
+//
+// totalMoveRange bounds are drawn uniformly in LINEAR space (see enterPhase in
+// tick.ts) and then log-returned, so a range that isn't symmetric in log terms
+// (lower bound != 1/upper bound) has a non-zero mean log-return even if it
+// "looks" centered on 1.0 linearly. accumulation is meant to be a directionless
+// chop, so its bounds must satisfy lower = 1/upper (e.g. [1/1.15, 1.15], not
+// [0.9, 1.15]) to keep the average outcome near-neutral — verified via
+// simulation: [0.9,1.15] closes up ~60% of the time (mean +2.2%), [1/1.15,1.15]
+// closes up ~53% of the time (mean +0.6%, as close to flat as linear-uniform
+// sampling of a log-symmetric range gets). The other four phases are meant to
+// be directional (their whole point is the trend), so their asymmetry is
+// intentional — checked analytically/via simulation and each phase's mean lands
+// close to its designed midpoint: early_bull ~+37% (range +15%/+60%), bull
+// ~+239% i.e. ~3.39x (range 2x-5x), euphoria ~+64% (range +30%/+100%), bear
+// ~-66% (range -50%/-80%) — none of these needed a bounds change.
 export const MACRO_CONFIG: Record<MacroPhase, MacroPhaseConfig> = {
-  accumulation: { minDurationMin: 12, maxDurationMin: 32, totalMoveRange: [0.9, 1.15], volMultiplier: 1.0, fearGreedBase: 32, label: 'Зима', localCycleUpBias: 0.5 },
+  accumulation: { minDurationMin: 12, maxDurationMin: 32, totalMoveRange: [1 / 1.15, 1.15], volMultiplier: 1.0, fearGreedBase: 32, label: 'Зима', localCycleUpBias: 0.5 },
   early_bull: { minDurationMin: 8, maxDurationMin: 20, totalMoveRange: [1.15, 1.6], volMultiplier: 1.1, fearGreedBase: 55, label: 'Восстановление', localCycleUpBias: 0.62 },
   bull: { minDurationMin: 10, maxDurationMin: 24, totalMoveRange: [2, 5], volMultiplier: 1.3, fearGreedBase: 68, label: 'Бычий', localCycleUpBias: 0.72 },
   euphoria: { minDurationMin: 2, maxDurationMin: 8, totalMoveRange: [1.3, 2], volMultiplier: 1.8, fearGreedBase: 88, label: 'Распределение', localCycleUpBias: 0.78 },

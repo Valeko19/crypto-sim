@@ -1,6 +1,6 @@
 import { MarketStatus, PortfolioView, Candle } from './api';
 
-export interface LivePriceInfo { price: number; change24hPct: number; }
+export interface LivePriceInfo { price: number; changePct: number; }
 
 interface WsState {
   prices: Record<string, LivePriceInfo>;
@@ -28,7 +28,7 @@ function connect() {
       const { type, payload } = JSON.parse(ev.data);
       if (type === 'price_updates') {
         const nextPrices: Record<string, LivePriceInfo> = { ...state.prices };
-        for (const c of payload.coins) nextPrices[c.id] = { price: c.price, change24hPct: c.change24hPct };
+        for (const c of payload.coins) nextPrices[c.id] = { price: c.price, changePct: c.changePct };
         state = { ...state, prices: nextPrices, marketStatus: payload.marketStatus };
         emit();
       } else if (type === 'portfolio_updates') {

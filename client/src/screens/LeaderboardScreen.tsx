@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, LeaderboardView, RankInfo } from '../lib/api';
 import { formatCompact, formatUsdd } from '../lib/format';
+import { rankEmoji } from '../lib/rankVisuals';
 
 export function LeaderboardScreen() {
   const [ranks, setRanks] = useState<RankInfo[] | null>(null);
@@ -32,7 +33,7 @@ export function LeaderboardScreen() {
               league === r.name ? 'border-transparent bg-accent-gradient text-white' : 'border-border text-muted hover:text-white'
             }`}
           >
-            {r.name}
+            {rankEmoji(r.name)} {r.name}
           </button>
         ))}
       </div>
@@ -40,7 +41,7 @@ export function LeaderboardScreen() {
       {board && (
         <>
           <p className="mb-3 text-sm text-muted">
-            Лига {board.league} · ${formatCompact(board.minCapital)}+ · {board.totalPlayers} игроков
+            {rankEmoji(board.league)} Лига {board.league} · ${formatCompact(board.minCapital)}+ · {board.totalPlayers} игроков
           </p>
           <div className="space-y-2">
             {board.entries.map(entry => (

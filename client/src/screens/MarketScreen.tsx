@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, CoinListItem, MarketStatus } from '../lib/api';
 import { useMarketSocket } from '../hooks/useMarketSocket';
+import { LivePriceInfo } from '../lib/wsStore';
 import { CoinAvatar } from '../components/CoinAvatar';
 import { FearGreedBar } from '../components/FearGreedBar';
 import { formatCompact, formatPrice, formatPct, pctColorClass, formatDurationShort } from '../lib/format';
@@ -31,24 +32,37 @@ export function MarketScreen() {
     });
   }, []);
 
+  // Price/% change still tick live (every ~1s via WS), but market cap — and the
+  // section ordering derived from it — only needs to feel current, not jump
+  // every second; refreshing it that often just re-sorts the list underneath
+  // the reader. Throttle the snapshot used for cap/sort to once every 10s.
+  const livePricesRef = useRef<Record<string, LivePriceInfo>>(live.prices);
+  livePricesRef.current = live.prices;
+  const [capPrices, setCapPrices] = useState<Record<string, LivePriceInfo>>(live.prices);
+  useEffect(() => {
+    const interval = setInterval(() => setCapPrices(livePricesRef.current), 10_000);
+    return () => clearInterval(interval);
+  }, []);
+
   const status = live.marketStatus ?? marketStatus;
 
   const bySection = useMemo(() => {
     if (!coins) return null;
     const groups: Record<string, CoinListItem[]> = { top1: [], alt: [], meme: [] };
     for (const c of coins) groups[c.section].push(c);
-    // Rank by live market cap within each section — a coin's section (top1 /
-    // alt / meme) is fixed, but its position inside that section tracks its
-    // current cap so the list stays a real leaderboard, not a static order.
+    // Rank by market cap (refreshed every 10s, see capPrices above) within each
+    // section — a coin's section (top1 / alt / meme) is fixed, but its position
+    // inside that section tracks its cap so the list stays a real leaderboard,
+    // not a static order.
     for (const list of Object.values(groups)) {
       list.sort((a, b) => {
-        const capA = (live.prices[a.id]?.price ?? a.price) * a.supply;
-        const capB = (live.prices[b.id]?.price ?? b.price) * b.supply;
+        const capA = (capPrices[a.id]?.price ?? a.price) * a.supply;
+        const capB = (capPrices[b.id]?.price ?? b.price) * b.supply;
         return capB - capA;
       });
     }
     return groups;
-  }, [coins, live.prices]);
+  }, [coins, capPrices]);
 
   if (!coins || !bySection) {
     return <div className="p-4 text-muted">Загрузка рынка…</div>;
@@ -104,21 +118,22 @@ export function MarketScreen() {
               {bySection[section].map(coin => {
                 const l = live.prices[coin.id];
                 const price = l?.price ?? coin.price;
-                const change = l?.change24hPct ?? coin.change24hPct;
+                const change = l?.changePct ?? coin.changePct;
+                const capPrice = capPrices[coin.id]?.price ?? coin.price;
                 return (
                   <button
                     key={coin.id}
                     onClick={() => navigate(`/market/${coin.id}`)}
                     className="flex w-full items-center gap-3 rounded-2xl border border-border bg-card p-3 text-left transition-colors hover:bg-card-light"
                   >
-                    <CoinAvatar coinId={coin.id} symbol={coin.symbol} />
+                    <CoinAvatar coinId={coin.id} symbol={coin.symbol} iconUrl={coin.iconUrl} size={56} />
                     <div className="min-w-0 flex-1">
                       <div className="flex items-baseline gap-2">
                         <span className="font-semibold">{coin.symbol}</span>
                         <span className="truncate text-sm text-muted">{coin.name}</span>
                       </div>
                       <div className="text-xs text-muted">
-                        MCap ${formatCompact(price * coin.supply)} · Supply {formatCompact(coin.supply)}
+                        MCap ${formatCompact(capPrice * coin.supply)} · Supply {formatCompact(coin.supply)}
                       </div>
                     </div>
                     <div className="shrink-0 text-right">

@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api, PortfolioView } from '../lib/api';
 import { useMarketSocket } from '../hooks/useMarketSocket';
 import { CoinAvatar } from '../components/CoinAvatar';
-import { formatUsdd, formatPct, pctColorClass, formatCompact } from '../lib/format';
+import { formatUsdd, formatPct, pctColorClass, formatQty } from '../lib/format';
+import { rankEmoji } from '../lib/rankVisuals';
 import { ShareIcon } from '../components/icons';
 import { LOCAL_PLAYER_USERNAME } from '../lib/telegram';
 
@@ -15,7 +17,18 @@ export function ProfileScreen() {
     api.getPortfolio().then(setPortfolio);
   }, []);
 
-  const current = live.portfolio ?? portfolio;
+  // live.portfolio updates every ~1s via WS (background drift moving holding
+  // values), which made net worth/PnL jitter constantly — refresh the
+  // displayed snapshot only once every 10s instead, same as market cap.
+  const livePortfolioRef = useRef(live.portfolio);
+  livePortfolioRef.current = live.portfolio;
+  const [throttledPortfolio, setThrottledPortfolio] = useState(live.portfolio);
+  useEffect(() => {
+    const interval = setInterval(() => setThrottledPortfolio(livePortfolioRef.current), 10_000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const current = throttledPortfolio ?? portfolio;
 
   useEffect(() => {
     if (!current) return;
@@ -29,20 +42,33 @@ export function ProfileScreen() {
 
   const initials = LOCAL_PLAYER_USERNAME.replace('@', '').slice(0, 2).toUpperCase();
 
+  // Portfolio rows (USDD cash + every coin holding) graded top-to-bottom by
+  // value, largest first — USDD is just another balance for this ordering,
+  // not pinned to the top.
+  type Row = { kind: 'usdd' } | { kind: 'coin'; holding: PortfolioView['holdings'][number] };
+  const rows: Row[] = [{ kind: 'usdd' }, ...current.holdings.map(holding => ({ kind: 'coin' as const, holding }))];
+  const rowValue = (row: Row) => (row.kind === 'usdd' ? current.usddBalance : row.holding.value);
+  rows.sort((a, b) => rowValue(b) - rowValue(a));
+
   return (
     <div className="px-4 pt-4">
       <div className="flex items-center gap-3">
-        <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-accent-gradient text-lg font-bold shadow-glow">
-          {initials}
+        <div className="relative shrink-0">
+          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-accent-gradient text-lg font-bold shadow-glow">
+            {initials}
+          </div>
+          <span className="absolute -bottom-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full border-2 border-bg bg-card-light text-sm">
+            {rankEmoji(current.rank)}
+          </span>
         </div>
         <div className="flex-1">
           <div className="font-semibold">{LOCAL_PLAYER_USERNAME}</div>
-          <div className="text-sm text-muted">Ранг: {current.rank}</div>
+          <div className="text-sm text-muted">Ранг: {rankEmoji(current.rank)} {current.rank}</div>
         </div>
-        <div className="text-right">
-          <div className="rounded-full bg-card-light px-3 py-1 text-xs font-medium">Лига {current.league}</div>
+        <Link to="/leaderboard" className="text-right transition-opacity hover:opacity-80">
+          <div className="rounded-full bg-card-light px-3 py-1 text-xs font-medium">{rankEmoji(current.league)} Лига {current.league}</div>
           {leaguePlace != null && <div className="mt-1 text-xs text-muted">#{leaguePlace} в лиге</div>}
-        </div>
+        </Link>
       </div>
 
       <h2 className="mb-2 mt-6 text-sm font-medium text-muted">Портфель</h2>
@@ -52,32 +78,32 @@ export function ProfileScreen() {
       </div>
 
       <div className="mt-2 divide-y divide-border overflow-hidden rounded-2xl border border-border bg-card">
-        <div className="flex items-center gap-3 p-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-positive/20 text-sm font-bold text-positive">
-            $
-          </div>
-          <div className="flex-1">
-            <div className="font-semibold">USDD</div>
-            <div className="text-xs text-muted">Свободные средства</div>
-          </div>
-          <div className="font-semibold">{formatUsdd(current.usddBalance)}</div>
-        </div>
-
-        {current.holdings.map(h => (
-          <div key={h.coinId} className="flex items-center gap-3 p-3">
-            <CoinAvatar coinId={h.coinId} symbol={h.symbol} size={40} />
-            <div className="min-w-0 flex-1">
-              <div className="font-semibold">{h.symbol}</div>
-              <div className="truncate text-xs text-muted">
-                {formatCompact(h.amount)} монет · {h.pctEmission.toFixed(3)}% эмиссии
+        {rows.map(row =>
+          row.kind === 'usdd' ? (
+            <div key="usdd" className="flex items-center gap-3 p-3">
+              <img src="/usdd-logo.svg" alt="USDD" className="h-10 w-10 shrink-0 rounded-full" />
+              <div className="flex-1">
+                <div className="font-semibold">USDD</div>
+                <div className="text-xs text-muted">Свободные средства</div>
+              </div>
+              <div className="font-semibold">{formatUsdd(current.usddBalance)}</div>
+            </div>
+          ) : (
+            <div key={row.holding.coinId} className="flex items-center gap-3 p-3">
+              <CoinAvatar coinId={row.holding.coinId} symbol={row.holding.symbol} iconUrl={row.holding.iconUrl} size={40} />
+              <div className="min-w-0 flex-1">
+                <div className="font-semibold">{row.holding.symbol}</div>
+                <div className="truncate text-xs text-muted">
+                  {formatQty(row.holding.amount, row.holding.currentPrice)} монет · {row.holding.pctEmission.toFixed(3)}% эмиссии
+                </div>
+              </div>
+              <div className="shrink-0 text-right">
+                <div className="font-semibold">{formatUsdd(row.holding.value)}</div>
+                <div className={`text-xs ${pctColorClass(row.holding.pnlPct)}`}>{formatPct(row.holding.pnlPct)}</div>
               </div>
             </div>
-            <div className="shrink-0 text-right">
-              <div className="font-semibold">{formatUsdd(h.value)}</div>
-              <div className={`text-xs ${pctColorClass(h.pnlPct)}`}>{formatPct(h.pnlPct)}</div>
-            </div>
-          </div>
-        ))}
+          )
+        )}
       </div>
 
       <p className="mt-3 text-sm text-muted">

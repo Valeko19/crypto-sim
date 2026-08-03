@@ -24,6 +24,7 @@ export interface TickBreakdown {
   localDriftPct: number;
   baseNoisePct: number;
   relativeNoisePct: number;
+  stumblePct: number;
   gravityPct: number;
   totalPct: number;
 }
@@ -32,7 +33,7 @@ export interface CoinState {
   config: CoinConfig;
   pool: Pool;
   npcLockedAmount: number;
-  minuteHistory: { t: number; p: number }[]; // ~1 sample/min, up to 24h, for 24h change
+  recentHistory: { t: number; p: number }[]; // dense samples, trimmed to RECENT_CHANGE_WINDOW_MS, for the displayed change %
   fiveMinHistory: { t: number; p: number }[]; // dense samples, trimmed to 5 min, for liveliness trigger
   candles: Candle[];
   currentCandle: Candle | null;
@@ -47,6 +48,20 @@ export interface CoinState {
   // reserves because those also move from background drift, not just real buys.
   projectLevel: number;
   playerOwnedCoins: number;
+  // Sub-candle texture (see tick.ts): a bounded, mean-reverting multiplier on
+  // the noise terms so amplitude itself clusters (calm patches vs. bursty
+  // patches) instead of every tick drawing from the same fixed-width
+  // distribution, plus a pending single-tick counter-impulse that gets exactly
+  // cancelled the following tick (see `stumblePending`) so it can never bias
+  // the phase's calibrated target — only ever shows up as a wick or, rarely, a
+  // single off-color candle.
+  noiseAmpState: number;
+  stumblePending: number;
+  // Tracks consecutive closed candles of the same color, so bear-phase streak
+  // breaking (see tick.ts) can escalate specifically once a real streak has
+  // built up, rather than firing at a flat rate regardless of context.
+  lastCandleColor: 'red' | 'green' | null;
+  sameColorStreak: number;
 }
 
 // The macro drift source lives tick-to-tick as a small state machine (see
@@ -70,6 +85,7 @@ export interface EngineState {
   macroPhaseTargetLogReturn: number; // ln(target multiplier) — fixed for the whole phase
   macroPhaseStartPrice: number; // BTCR price when the phase began, for measuring progress toward the target
   macroMode: MacroMode;
+  macroModeStartTick: number; // when the current mode segment began — used to gauge how long it's run
   macroModeEndTick: number;
   macroModeDriftPctPerMin: number; // current mode's rate (resampled every tick while choppy)
   macroChoppyAmplitudePctPerMin: number; // reference amplitude while macroMode === 'choppy'
@@ -79,7 +95,7 @@ export interface EngineState {
 
 const CANDLE_INTERVAL_MS = 5_000;
 const MAX_CANDLES = 600; // 50 min of 5s candles
-const MAX_MINUTE_SAMPLES = 1440; // 24h
+const RECENT_CHANGE_WINDOW_MS = 4 * 60_000; // the displayed % change looks back this far
 
 export function createInitialState(): EngineState {
   const coins: Record<string, CoinState> = {};
@@ -90,7 +106,7 @@ export function createInitialState(): EngineState {
       config: cfg,
       pool: { coinReserve, usddReserve },
       npcLockedAmount: cfg.emission * cfg.npcLockedPct,
-      minuteHistory: [{ t: Date.now(), p: cfg.startPrice }],
+      recentHistory: [{ t: Date.now(), p: cfg.startPrice }],
       fiveMinHistory: [{ t: Date.now(), p: cfg.startPrice }],
       candles: [],
       currentCandle: null,
@@ -98,9 +114,13 @@ export function createInitialState(): EngineState {
       livelinessHalfLifeMs: 20 * 60_000,
       livelinessLastUpdateMs: Date.now(),
       localCycle: { phase: 'idle', phaseEndTick: 0, driftPctPerMin: 0, riseGainPct: 0 },
-      lastTick: { macroDriftPct: 0, localDriftPct: 0, baseNoisePct: 0, relativeNoisePct: 0, gravityPct: 0, totalPct: 0 },
+      lastTick: { macroDriftPct: 0, localDriftPct: 0, baseNoisePct: 0, relativeNoisePct: 0, stumblePct: 0, gravityPct: 0, totalPct: 0 },
       projectLevel: cfg.startPrice,
       playerOwnedCoins: 0, // corrected at boot from real holdings (see index.ts)
+      noiseAmpState: 1,
+      stumblePending: 0,
+      lastCandleColor: null,
+      sameColorStreak: 0,
     };
   }
   return {
@@ -113,6 +133,7 @@ export function createInitialState(): EngineState {
     macroPhaseTargetLogReturn: 0,
     macroPhaseStartPrice: COIN_MAP.btcr.startPrice,
     macroMode: 'trend',
+    macroModeStartTick: 0,
     macroModeEndTick: 0,
     macroModeDriftPctPerMin: 0,
     macroChoppyAmplitudePctPerMin: 0,
@@ -121,15 +142,18 @@ export function createInitialState(): EngineState {
   };
 }
 
-export { CANDLE_INTERVAL_MS, MAX_CANDLES, MAX_MINUTE_SAMPLES };
+export { CANDLE_INTERVAL_MS, MAX_CANDLES, RECENT_CHANGE_WINDOW_MS };
 
 export function getPrice(state: EngineState, coinId: string): number {
   return price(state.coins[coinId].pool);
 }
 
-export function change24hPct(cs: CoinState): number {
-  if (cs.minuteHistory.length === 0) return 0;
-  const oldest = cs.minuteHistory[0];
+// The oldest surviving sample in recentHistory (kept trimmed to
+// RECENT_CHANGE_WINDOW_MS by updateRecentHistory in tick.ts) approximates the
+// price ~4 minutes ago, so this is the change over that rolling window.
+export function recentChangePct(cs: CoinState): number {
+  if (cs.recentHistory.length === 0) return 0;
+  const oldest = cs.recentHistory[0];
   const current = price(cs.pool);
   return (current / oldest.p - 1) * 100;
 }
