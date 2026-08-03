@@ -72,8 +72,14 @@ export interface StakingCoinView {
   positions: StakingPositionView[]; pendingRewards: number;
 }
 
+// In local dev the Vite proxy forwards /api to the server on the same origin
+// (see vite.config.ts), so this stays empty. Split-domain deploys (client on
+// Vercel, server on Render/Railway/etc.) set VITE_API_BASE to the server's
+// own URL at build time since there's no shared origin to proxy through.
+export const API_BASE = import.meta.env.VITE_API_BASE ?? '';
+
 async function req<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`/api${path}`, {
+  const res = await fetch(`${API_BASE}/api${path}`, {
     headers: { 'Content-Type': 'application/json' },
     ...options,
   });

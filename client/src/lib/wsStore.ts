@@ -1,4 +1,4 @@
-import { MarketStatus, PortfolioView, Candle } from './api';
+import { MarketStatus, PortfolioView, Candle, API_BASE } from './api';
 
 export interface LivePriceInfo { price: number; changePct: number; }
 
@@ -20,8 +20,13 @@ function emit() {
 }
 
 function connect() {
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const ws = new WebSocket(`${proto}//${location.host}/ws`);
+  // Same-origin by default (dev proxy handles /ws — see vite.config.ts); a
+  // split-domain deploy sets VITE_API_BASE to the server's http(s) URL, which
+  // is swapped to the matching ws(s) scheme here.
+  const wsUrl = API_BASE
+    ? `${API_BASE.replace(/^http/, 'ws')}/ws`
+    : `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`;
+  const ws = new WebSocket(wsUrl);
 
   ws.onmessage = ev => {
     try {
