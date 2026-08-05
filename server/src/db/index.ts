@@ -5,7 +5,11 @@ import path from 'node:path';
 // required. Data persists to disk between dev-server restarts.
 const dataDir = path.join(process.cwd(), '.pgdata');
 
-export const db = new PGlite(dataDir);
+// Lower the WASM linear memory's initial reservation (default is large enough
+// that Render's free 512MB instance OOM'd on boot even with an empty DB and
+// zero traffic) — this project's actual data (11 coins, a handful of NPC
+// bots, one or two players) needs nowhere near PGlite's default headroom.
+export const db = new PGlite(dataDir, { initialMemory: 128 * 1024 * 1024 });
 
 export async function initDb() {
   await db.exec(`
