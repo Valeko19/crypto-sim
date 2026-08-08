@@ -3,7 +3,10 @@ import path from 'node:path';
 
 // Embedded real Postgres (compiled to WASM) — no local Postgres install/service
 // required. Data persists to disk between dev-server restarts.
-const dataDir = path.join(process.cwd(), '.pgdata');
+// PGDATA_DIR overrides the location in production (Render's default web
+// service filesystem is ephemeral and wipes on every deploy — PGDATA_DIR
+// points at a mounted persistent disk instead; see render.yaml).
+const dataDir = process.env.PGDATA_DIR ?? path.join(process.cwd(), '.pgdata');
 
 // Lower the WASM linear memory's initial reservation (default is large enough
 // that Render's free 512MB instance OOM'd on boot even with an empty DB and
@@ -56,29 +59,41 @@ export async function initDb() {
       usdd_reserve DOUBLE PRECISION NOT NULL
     );
 
-    -- Per-coin accumulator fed by that coin's own trade fees (see tradeFeePct
-    -- in config/coins.ts) instead of the fee just vanishing; drained
-    -- periodically to that coin's stakers — see engine/staking.ts.
-    CREATE TABLE IF NOT EXISTS coin_fee_pools (
-      coin_id TEXT PRIMARY KEY,
-      pool_usdd DOUBLE PRECISION NOT NULL DEFAULT 0
-    );
-
     -- Staking never moves coins out of player_holdings — a position only
     -- *reserves* part of the holding from being sold (see reservedStakedAmount
     -- in db/queries.ts). Real wall-clock time throughout (staked_at/lock_until/
-    -- unstake_available_at), not game ticks.
+    -- unstake_available_at), not game ticks. Reward is a fixed APR (see
+    -- config/staking.ts) on the USD value fixed at stake time (stake_price) —
+    -- not the coin's current price, so a player can't inflate their own
+    -- reward by moving the coin's price on the AMM after staking.
     CREATE TABLE IF NOT EXISTS staking_positions (
       id TEXT PRIMARY KEY,
       player_id TEXT NOT NULL REFERENCES players(id),
       coin_id TEXT NOT NULL,
       amount DOUBLE PRECISION NOT NULL,
       mode TEXT NOT NULL,
+      stake_price DOUBLE PRECISION NOT NULL DEFAULT 0,
       staked_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       lock_until TIMESTAMPTZ,
       unstake_requested_at TIMESTAMPTZ,
       unstake_available_at TIMESTAMPTZ,
       pending_rewards DOUBLE PRECISION NOT NULL DEFAULT 0
+    );
+
+    -- One row per player: purchase flag + the single active bot's target config,
+    -- combined so retargeting (switching the one bot to a new coin) is just an
+    -- overwrite of this same row, never a second row. amount means USDD for a
+    -- 'buy' bot and coin quantity for a 'sell' bot, mirroring how /trade itself
+    -- splits amountUsdd/amountCoin by side.
+    CREATE TABLE IF NOT EXISTS trading_bots (
+      player_id TEXT PRIMARY KEY REFERENCES players(id),
+      purchased BOOLEAN NOT NULL DEFAULT FALSE,
+      coin_id TEXT,
+      side TEXT,
+      interval_ms BIGINT,
+      amount DOUBLE PRECISION,
+      enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      next_run_at TIMESTAMPTZ
     );
   `);
 }

@@ -14,6 +14,8 @@ import { createWsServer } from './ws/server.js';
 import { computePortfolio } from './api/helpers.js';
 import { distributeStakingRewards } from './engine/staking.js';
 import { STAKING_DISTRIBUTION_INTERVAL_MS } from './config/staking.js';
+import { runTradingBots } from './engine/tradingBot.js';
+import { BOT_POLL_INTERVAL_MS } from './config/tradingBot.js';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 8787;
 
@@ -85,6 +87,7 @@ async function main() {
         fearGreedIndex: state.fearGreedIndex,
         fearGreedLabel: fearGreedLabel(state.fearGreedIndex),
         ...phaseProgress(state),
+        activeNews: state.activeNewsBanner,
       },
     });
 
@@ -113,6 +116,10 @@ async function main() {
   setInterval(() => {
     distributeStakingRewards(state).catch(() => {});
   }, STAKING_DISTRIBUTION_INTERVAL_MS);
+
+  setInterval(() => {
+    runTradingBots(state).catch(() => {});
+  }, BOT_POLL_INTERVAL_MS);
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.on(signal, () => {

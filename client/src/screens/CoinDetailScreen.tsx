@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { createChart, ColorType, CandlestickSeriesPartialOptions, IChartApi, ISeriesApi } from 'lightweight-charts';
-import { api, CoinListItem } from '../lib/api';
+import { api, CoinListItem, TradingBotStatus } from '../lib/api';
 import { useMarketSocket } from '../hooks/useMarketSocket';
 import { CoinAvatar } from '../components/CoinAvatar';
+import { NewsBanner } from '../components/NewsBanner';
 import { formatCompact, formatPrice, formatPct, formatUsdd, formatQty, parseAmountInput, formatAmountInput, pctColorClass, pricePrecision } from '../lib/format';
 
 // borderVisible must stay on: quiet coins can have a near-zero-height body for
@@ -35,6 +36,13 @@ export function CoinDetailScreen() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
+  const [botStatus, setBotStatus] = useState<TradingBotStatus | null>(null);
+  const [botSide, setBotSide] = useState<'buy' | 'sell'>('buy');
+  const [botIntervalSec, setBotIntervalSec] = useState('5');
+  const [botAmount, setBotAmount] = useState('');
+  const [botBusy, setBotBusy] = useState(false);
+  const [botMessage, setBotMessage] = useState<string | null>(null);
+
   const chartRef = useRef<HTMLDivElement | null>(null);
   const chartApiRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
@@ -43,6 +51,7 @@ export function CoinDetailScreen() {
   useEffect(() => {
     api.getCoins().then(res => setCoin(res.coins.find(c => c.id === coinId) ?? null));
     refreshPortfolio();
+    refreshBotStatus();
   }, [coinId]);
 
   function refreshPortfolio() {
@@ -51,6 +60,51 @@ export function CoinDetailScreen() {
       const h = p.holdings.find(x => x.coinId === coinId);
       setHolding(h ? { amount: h.amount, pctEmission: h.pctEmission, pnlPct: h.pnlPct } : null);
     });
+  }
+
+  function refreshBotStatus() {
+    api.getBotStatus().then(bs => {
+      setBotStatus(bs);
+      // Prefill the form from the bot's existing config only when it's already
+      // targeting THIS coin — otherwise leave the form at its defaults, since
+      // saving here would retarget the bot away from wherever it currently is.
+      if (bs.config?.coinId === coinId) {
+        setBotSide(bs.config.side);
+        setBotIntervalSec(String(Math.round((bs.config.intervalMs / 1000) * 100) / 100));
+        setBotAmount(String(bs.config.amount));
+      }
+    });
+  }
+
+  async function saveBotConfig() {
+    const intervalMs = Math.round(Number(botIntervalSec) * 1000);
+    const amt = Number(botAmount);
+    if (!intervalMs || !amt) return;
+    setBotBusy(true);
+    setBotMessage(null);
+    try {
+      await api.configureBot(coinId, botSide, intervalMs, amt);
+      setBotMessage('Бот настроен');
+      refreshBotStatus();
+    } catch (e: any) {
+      setBotMessage(e.message ?? 'Ошибка настройки');
+    } finally {
+      setBotBusy(false);
+    }
+  }
+
+  async function toggleBot() {
+    if (!botStatus?.config) return;
+    setBotBusy(true);
+    setBotMessage(null);
+    try {
+      await api.toggleBot(!botStatus.config.enabled);
+      refreshBotStatus();
+    } catch (e: any) {
+      setBotMessage(e.message ?? 'Ошибка');
+    } finally {
+      setBotBusy(false);
+    }
   }
 
   // Chart setup (once)
@@ -241,6 +295,8 @@ export function CoinDetailScreen() {
         <span className={`text-sm font-medium ${pctColorClass(liveChange)}`}>{formatPct(liveChange)}</span>
       </div>
 
+      <NewsBanner news={live.marketStatus?.activeNews ?? null} />
+
       <div className="mt-4 overflow-hidden rounded-2xl border border-border bg-card">
         <div ref={chartRef} className="w-full" />
       </div>
@@ -342,6 +398,76 @@ export function CoinDetailScreen() {
 
         {message && <div className="mt-2 text-center text-xs text-muted">{message}</div>}
       </div>
+
+      {botStatus?.purchased && (
+        <div className="mt-4 rounded-2xl border border-border bg-card p-4">
+          <div className="mb-3 text-sm font-semibold">Торговый бот</div>
+
+          {botStatus.config && botStatus.config.coinId !== coinId && (
+            <div className="mb-3 text-xs text-muted">
+              Бот сейчас настроен на другую монету — сохранение переключит его на {coin?.symbol ?? 'эту монету'}.
+            </div>
+          )}
+
+          <div className="mb-3 flex gap-2">
+            <button
+              onClick={() => setBotSide('buy')}
+              className={`flex-1 rounded-xl py-2 text-sm font-semibold transition-colors ${botSide === 'buy' ? 'bg-positive/20 text-positive' : 'text-muted'}`}
+            >
+              Покупать
+            </button>
+            <button
+              onClick={() => setBotSide('sell')}
+              className={`flex-1 rounded-xl py-2 text-sm font-semibold transition-colors ${botSide === 'sell' ? 'bg-negative/20 text-negative' : 'text-muted'}`}
+            >
+              Продавать
+            </button>
+          </div>
+
+          <div className="mb-2 text-xs text-muted">Интервал, секунд (минимум 1)</div>
+          <input
+            type="text"
+            inputMode="decimal"
+            value={botIntervalSec}
+            onChange={e => setBotIntervalSec(e.target.value.replace(/[^\d.]/g, ''))}
+            className="w-full rounded-xl border border-border bg-bg px-3 py-2.5 text-lg outline-none focus:border-accent-to"
+          />
+
+          <div className="mb-2 mt-3 text-xs text-muted">
+            {botSide === 'buy' ? 'Сумма в USDD за сделку' : `Количество ${coin?.symbol ?? ''} за сделку`}
+          </div>
+          <input
+            type="text"
+            inputMode="decimal"
+            value={formatAmountInput(botAmount)}
+            onChange={e => setBotAmount(parseAmountInput(e.target.value))}
+            placeholder="0.00"
+            className="w-full rounded-xl border border-border bg-bg px-3 py-2.5 text-lg outline-none focus:border-accent-to"
+          />
+
+          <button
+            onClick={saveBotConfig}
+            disabled={botBusy || !botIntervalSec || !botAmount}
+            className="mt-4 w-full rounded-xl bg-accent-gradient py-3 font-semibold shadow-glow disabled:opacity-40"
+          >
+            Сохранить
+          </button>
+
+          {botStatus.config?.coinId === coinId && (
+            <button
+              onClick={toggleBot}
+              disabled={botBusy}
+              className={`mt-2 w-full rounded-xl border py-2 text-sm font-semibold transition-colors disabled:opacity-40 ${
+                botStatus.config.enabled ? 'border-positive/30 bg-positive/10 text-positive' : 'border-border text-muted'
+              }`}
+            >
+              {botStatus.config.enabled ? 'Бот включён — выключить' : 'Бот выключен — включить'}
+            </button>
+          )}
+
+          {botMessage && <div className="mt-2 text-center text-xs text-muted">{botMessage}</div>}
+        </div>
+      )}
     </div>
   );
 }

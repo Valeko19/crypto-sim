@@ -2,3 +2,6 @@ node_modules/
 dist/
 .pgdata/
 .pgdata_corrupt_backup*/
+.pgdata_old_*/
+*.tsbuildinfo
+логотипы монет/

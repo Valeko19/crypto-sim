@@ -1,6 +1,8 @@
 import { COINS, COIN_MAP, CoinConfig } from '../config/coins.js';
 import { Pool, price } from './amm.js';
 import { MacroPhase, MACRO_CONFIG } from './macroCycle.js';
+import { NewsDirection, NEWS_MIN_INTERVAL_MS, NEWS_MAX_INTERVAL_MS } from '../config/news.js';
+import type { ActiveNewsEvent } from './news.js';
 
 export interface Candle {
   t: number; // start time ms
@@ -26,6 +28,7 @@ export interface TickBreakdown {
   relativeNoisePct: number;
   stumblePct: number;
   gravityPct: number;
+  newsPct: number;
   totalPct: number;
 }
 
@@ -91,6 +94,16 @@ export interface EngineState {
   macroChoppyAmplitudePctPerMin: number; // reference amplitude while macroMode === 'choppy'
   fearGreedIndex: number;
   coins: Record<string, CoinState>;
+  // News events (see engine/news.ts) are the one other place besides staking
+  // measured in real wall-clock time rather than ticks — but unlike staking,
+  // they don't need DB persistence: TICK_MS is a fixed 1000ms with no speed
+  // multiplier anywhere, so a Date.now() gate checked once per tick already
+  // IS real-time, and a server restart just resetting the schedule is fine
+  // (exactly like macroPhase/macroMode already reset on restart).
+  nextNewsEventAt: number; // Date.now() epoch ms of the next eligible event
+  activeNewsEvent: ActiveNewsEvent | null; // in-progress ramp (a handful of ticks)
+  activeNewsBanner: { headline: string; direction: NewsDirection; expiresAt: number } | null;
+  newsDecks: Record<string, string[]>; // no-repeat-until-exhausted headline decks, keyed `${direction}_${strength}`
 }
 
 const CANDLE_INTERVAL_MS = 5_000;
@@ -114,7 +127,7 @@ export function createInitialState(): EngineState {
       livelinessHalfLifeMs: 20 * 60_000,
       livelinessLastUpdateMs: Date.now(),
       localCycle: { phase: 'idle', phaseEndTick: 0, driftPctPerMin: 0, riseGainPct: 0 },
-      lastTick: { macroDriftPct: 0, localDriftPct: 0, baseNoisePct: 0, relativeNoisePct: 0, stumblePct: 0, gravityPct: 0, totalPct: 0 },
+      lastTick: { macroDriftPct: 0, localDriftPct: 0, baseNoisePct: 0, relativeNoisePct: 0, stumblePct: 0, gravityPct: 0, newsPct: 0, totalPct: 0 },
       projectLevel: cfg.startPrice,
       playerOwnedCoins: 0, // corrected at boot from real holdings (see index.ts)
       noiseAmpState: 1,
@@ -139,6 +152,10 @@ export function createInitialState(): EngineState {
     macroChoppyAmplitudePctPerMin: 0,
     fearGreedIndex: MACRO_CONFIG.accumulation.fearGreedBase,
     coins,
+    nextNewsEventAt: Date.now() + NEWS_MIN_INTERVAL_MS + Math.random() * (NEWS_MAX_INTERVAL_MS - NEWS_MIN_INTERVAL_MS),
+    activeNewsEvent: null,
+    activeNewsBanner: null,
+    newsDecks: {},
   };
 }
 

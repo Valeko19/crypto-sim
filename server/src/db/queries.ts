@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { db } from './index.js';
-import { StakingMode } from '../config/staking.js';
+import { StakingMode, STAKING_FLEXIBLE_APR, STAKING_LOCKED_APR } from '../config/staking.js';
 
 export const LOCAL_PLAYER_ID = 'local_player';
 
@@ -195,38 +195,11 @@ export async function capHoldingAmount(playerId: string, coinId: string, newAmou
   );
 }
 
-// --- Staking: per-coin fee pool ---------------------------------------------
-// Fed by that coin's own trade fees (routes.ts /trade) instead of the fee just
-// vanishing; drained periodically to that coin's stakers (engine/staking.ts).
-
-export async function getFeePool(coinId: string): Promise<number> {
-  const res = await db.query<{ pool_usdd: number }>('SELECT pool_usdd FROM coin_fee_pools WHERE coin_id = $1', [coinId]);
-  return res.rows[0]?.pool_usdd ?? 0;
-}
-
-export async function addToFeePool(coinId: string, amount: number): Promise<void> {
-  if (amount <= 0) return;
-  await db.query(
-    `INSERT INTO coin_fee_pools (coin_id, pool_usdd) VALUES ($1, $2)
-     ON CONFLICT (coin_id) DO UPDATE SET pool_usdd = coin_fee_pools.pool_usdd + $2`,
-    [coinId, amount]
-  );
-}
-
-// Reads the current pool then zeroes it — safe without an explicit transaction
-// since this whole codebase is a single Node process with no concurrent writers.
-export async function drainFeePool(coinId: string): Promise<number> {
-  const current = await getFeePool(coinId);
-  if (current > 0) {
-    await db.query('UPDATE coin_fee_pools SET pool_usdd = 0 WHERE coin_id = $1', [coinId]);
-  }
-  return current;
-}
-
 // --- Staking: positions ------------------------------------------------------
 // Staking never moves coins out of player_holdings — a position only reserves
 // part of the holding from being sold. All timestamps are real wall-clock time
-// (see config/staking.ts), not game ticks.
+// (see config/staking.ts), not game ticks. Reward is a fixed APR on the USD
+// value fixed at stake time (stake_price) — no per-coin fee pool anymore.
 
 export interface StakingPositionRow {
   id: string;
@@ -234,6 +207,7 @@ export interface StakingPositionRow {
   coin_id: string;
   amount: number;
   mode: StakingMode;
+  stake_price: number;
   staked_at: string;
   lock_until: string | null;
   unstake_requested_at: string | null;
@@ -252,18 +226,31 @@ export function isPositionReserved(p: StakingPositionRow, nowMs: number): boolea
   return !p.unstake_requested_at || !p.unstake_available_at || new Date(p.unstake_available_at).getTime() > nowMs;
 }
 
+// Locked earns the locked APR only while the lock is genuinely still active;
+// past its own expiry (but not yet withdrawn) it earns the flexible APR
+// instead — no incentive to "forget" to withdraw to keep the higher rate
+// forever. Shared by engine/staking.ts (distribution) and helpers.ts
+// (display) so this logic only lives in one place.
+export function effectiveApr(p: StakingPositionRow, nowMs: number): number {
+  if (p.mode === 'locked' && p.lock_until && new Date(p.lock_until).getTime() > nowMs) {
+    return STAKING_LOCKED_APR;
+  }
+  return STAKING_FLEXIBLE_APR;
+}
+
 export async function createStakingPosition(
   playerId: string,
   coinId: string,
   amount: number,
   mode: StakingMode,
-  lockUntil: Date | null
+  lockUntil: Date | null,
+  stakePrice: number
 ): Promise<StakingPositionRow> {
   const id = randomUUID();
   const res = await db.query<StakingPositionRow>(
-    `INSERT INTO staking_positions (id, player_id, coin_id, amount, mode, lock_until)
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-    [id, playerId, coinId, amount, mode, lockUntil ? lockUntil.toISOString() : null]
+    `INSERT INTO staking_positions (id, player_id, coin_id, amount, mode, lock_until, stake_price)
+     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+    [id, playerId, coinId, amount, mode, lockUntil ? lockUntil.toISOString() : null, stakePrice]
   );
   return res.rows[0];
 }
@@ -282,8 +269,7 @@ export async function getPositionById(positionId: string): Promise<StakingPositi
 }
 
 // Every open position across every player/coin — used by the periodic rewards
-// distribution job (engine/staking.ts), which needs the full picture to split
-// each coin's fee pool proportionally among that coin's stakers.
+// distribution job (engine/staking.ts).
 export async function getAllOpenStakingPositions(): Promise<StakingPositionRow[]> {
   const res = await db.query<StakingPositionRow>('SELECT * FROM staking_positions');
   return res.rows;
@@ -296,6 +282,8 @@ export async function requestUnstakePosition(positionId: string, availableAt: Da
   );
 }
 
+// Deletes without paying out pending_rewards — used for the locked early
+// break-lock path, where accrued reward is forfeited by design.
 export async function deleteStakingPosition(positionId: string): Promise<void> {
   await db.query('DELETE FROM staking_positions WHERE id = $1', [positionId]);
 }
@@ -305,22 +293,112 @@ export async function addPendingRewards(positionId: string, amount: number): Pro
   await db.query('UPDATE staking_positions SET pending_rewards = pending_rewards + $2 WHERE id = $1', [positionId, amount]);
 }
 
-// Sums and zeroes pending_rewards across every one of this player's positions
-// in this coin — the route handler credits the returned total to usdd_balance,
-// same two-step "claim row, then credit balance" shape as the daily-bonus claim.
-export async function claimCoinRewards(playerId: string, coinId: string): Promise<number> {
-  const res = await db.query<{ total: number }>(
-    'SELECT COALESCE(SUM(pending_rewards), 0)::float as total FROM staking_positions WHERE player_id = $1 AND coin_id = $2',
+// Atomic delete+read in one statement — a separate prior read is only ever
+// used to decide ELIGIBILITY (isPositionReserved), never as the source of the
+// paid-out amount, so a concurrent addPendingRewards landing between the
+// eligibility check and this call is still captured correctly, and a second
+// concurrent call (double-click/retry) finds nothing left to delete and
+// returns null instead of double-crediting.
+export async function withdrawStakingPosition(positionId: string, playerId: string): Promise<number | null> {
+  const res = await db.query<{ pending_rewards: number }>(
+    'DELETE FROM staking_positions WHERE id = $1 AND player_id = $2 RETURNING pending_rewards',
+    [positionId, playerId]
+  );
+  return res.rows[0] ? Number(res.rows[0].pending_rewards) : null;
+}
+
+// Claims only FLEXIBLE positions' accrued reward for this (player, coin) —
+// locked positions' reward is intentionally never independently claimable
+// mid-lock; it's only ever settled by withdrawStakingPosition (full term) or
+// forfeited by deleteStakingPosition (early break). Otherwise a player could
+// claim a locked position's reward here first, THEN break the lock, keeping
+// the reward the break-lock penalty is supposed to forfeit. Single UPDATE...
+// RETURNING (not select-then-update) so there's no gap for a concurrent
+// addPendingRewards to land unaccounted-for.
+export async function claimFlexibleCoinRewards(playerId: string, coinId: string): Promise<number> {
+  const res = await db.query<{ pending_rewards: number }>(
+    `UPDATE staking_positions SET pending_rewards = 0
+     WHERE player_id = $1 AND coin_id = $2 AND mode = 'flexible' AND pending_rewards > 0
+     RETURNING pending_rewards`,
     [playerId, coinId]
   );
-  const total = Number(res.rows[0].total);
-  if (total > 0) {
-    await db.query(
-      'UPDATE staking_positions SET pending_rewards = 0 WHERE player_id = $1 AND coin_id = $2',
-      [playerId, coinId]
-    );
+  return res.rows.reduce((sum, r) => sum + Number(r.pending_rewards), 0);
+}
+
+// --- Trading bot -------------------------------------------------------------
+// One row per player: purchase flag + the single active bot's target config
+// (see db/index.ts for the table comment). Retargeting to a new coin is just
+// an overwrite of this same row via configureTradingBot's upsert.
+
+export interface TradingBotRow {
+  player_id: string;
+  purchased: boolean;
+  coin_id: string | null;
+  side: 'buy' | 'sell' | null;
+  interval_ms: number | null;
+  amount: number | null;
+  enabled: boolean;
+  next_run_at: string | null;
+}
+
+export async function getTradingBot(playerId: string): Promise<TradingBotRow | null> {
+  const res = await db.query<TradingBotRow>('SELECT * FROM trading_bots WHERE player_id = $1', [playerId]);
+  return res.rows[0] ?? null;
+}
+
+// Only ever sets `purchased` on conflict — a repeat/retry purchase must not
+// wipe an already-configured bot's coin_id/side/enabled back to defaults.
+export async function markBotPurchased(playerId: string): Promise<void> {
+  await db.query(
+    `INSERT INTO trading_bots (player_id, purchased) VALUES ($1, TRUE)
+     ON CONFLICT (player_id) DO UPDATE SET purchased = TRUE`,
+    [playerId]
+  );
+}
+
+export async function configureTradingBot(
+  playerId: string,
+  coinId: string,
+  side: 'buy' | 'sell',
+  intervalMs: number,
+  amount: number
+): Promise<void> {
+  const nextRunAt = new Date(Date.now() + intervalMs).toISOString();
+  await db.query(
+    `INSERT INTO trading_bots (player_id, purchased, coin_id, side, interval_ms, amount, enabled, next_run_at)
+     VALUES ($1, TRUE, $2, $3, $4, $5, TRUE, $6)
+     ON CONFLICT (player_id) DO UPDATE SET
+       coin_id = $2, side = $3, interval_ms = $4, amount = $5, enabled = TRUE, next_run_at = $6`,
+    [playerId, coinId, side, intervalMs, amount, nextRunAt]
+  );
+}
+
+// Resets next_run_at when enabling, so resuming a long-paused bot doesn't
+// immediately fire off a stale schedule from before it was turned off.
+export async function setTradingBotEnabled(playerId: string, enabled: boolean): Promise<void> {
+  if (enabled) {
+    const bot = await getTradingBot(playerId);
+    if (!bot?.interval_ms) return;
+    await db.query('UPDATE trading_bots SET enabled = TRUE, next_run_at = $2 WHERE player_id = $1', [
+      playerId,
+      new Date(Date.now() + bot.interval_ms).toISOString(),
+    ]);
+  } else {
+    await db.query('UPDATE trading_bots SET enabled = FALSE WHERE player_id = $1', [playerId]);
   }
-  return total;
+}
+
+// Every player with an active, purchased bot — polled by the background job.
+export async function getAllEnabledTradingBots(): Promise<TradingBotRow[]> {
+  const res = await db.query<TradingBotRow>('SELECT * FROM trading_bots WHERE enabled = TRUE AND purchased = TRUE');
+  return res.rows;
+}
+
+export async function advanceBotNextRun(playerId: string, intervalMs: number): Promise<void> {
+  await db.query('UPDATE trading_bots SET next_run_at = $2 WHERE player_id = $1', [
+    playerId,
+    new Date(Date.now() + intervalMs).toISOString(),
+  ]);
 }
 
 // How much of this (player, coin) holding is currently reserved by open

@@ -23,6 +23,7 @@ export default {
       boxShadow: {
         glow: '0 0 20px rgba(124, 111, 240, 0.35)',
         'glow-green': '0 0 16px rgba(34, 197, 94, 0.35)',
+        'glow-red': '0 0 16px rgba(240, 68, 82, 0.35)',
       },
       fontFamily: {
         sans: ['Inter', 'system-ui', '-apple-system', 'Segoe UI', 'sans-serif'],

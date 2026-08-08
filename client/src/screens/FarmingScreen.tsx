@@ -4,7 +4,7 @@ import { CoinAvatar } from '../components/CoinAvatar';
 import { formatUsdd, formatQty, formatDurationLong, parseAmountInput, formatAmountInput } from '../lib/format';
 
 interface FormState { amount: string; mode: StakingMode; }
-interface StakingConfig { flexibleMultiplier: number; lockedMultiplier: number; lockDurationMs: number; flexibleCooldownMs: number; }
+interface StakingConfig { flexibleAprPct: number; lockedAprPct: number; lockDurationMs: number; flexibleCooldownMs: number; }
 
 export function FarmingScreen() {
   const [coins, setCoins] = useState<StakingCoinView[] | null>(null);
@@ -64,7 +64,7 @@ export function FarmingScreen() {
     <div className="px-4 pt-4 pb-4">
       <h1 className="mb-1 text-lg font-bold">Фарминг</h1>
       <p className="mb-4 text-sm text-muted">
-        Заморозьте монеты и получайте пассивный доход в USDD — гарантированный минимум плюс доля от торговых комиссий этой монеты.
+        Заморозьте монеты и получайте фиксированный процент годовых в USDD.
       </p>
       {message && <div className="mb-3 rounded-xl bg-card-light p-3 text-xs text-muted">{message}</div>}
 
@@ -86,7 +86,7 @@ export function FarmingScreen() {
                   <button
                     disabled={busyKey === `claim:${c.coinId}`}
                     onClick={() => withBusy(`claim:${c.coinId}`, () => api.claimStakingRewards(c.coinId))}
-                    className="shrink-0 rounded-full bg-positive px-3 py-2 text-xs font-semibold text-black disabled:opacity-50"
+                    className="shrink-0 rounded-full border border-positive/30 bg-positive/10 px-3 py-2 text-xs font-semibold text-positive disabled:opacity-50"
                   >
                     Забрать {formatUsdd(c.pendingRewards)}
                   </button>
@@ -99,12 +99,14 @@ export function FarmingScreen() {
                     const now = Date.now();
                     let statusLabel: string;
                     let action: { label: string; onClick: () => void } | null = null;
+                    let canBreakLock = false;
                     if (!p.reserved) {
                       statusLabel = 'Готово к выводу';
                       action = { label: 'Снять', onClick: () => withBusy(`withdraw:${p.id}`, () => api.withdrawStaking(p.id)) };
                     } else if (p.mode === 'locked') {
                       const remainingSec = p.lockUntil ? Math.max(0, (new Date(p.lockUntil).getTime() - now) / 1000) : 0;
                       statusLabel = `Лок ещё ${formatDurationLong(remainingSec)}`;
+                      canBreakLock = true;
                     } else if (p.unstakeRequestedAt) {
                       const remainingSec = p.unstakeAvailableAt ? Math.max(0, (new Date(p.unstakeAvailableAt).getTime() - now) / 1000) : 0;
                       statusLabel = `Анстейк через ${formatDurationLong(remainingSec)}`;
@@ -113,19 +115,38 @@ export function FarmingScreen() {
                       action = { label: 'Запросить анстейк', onClick: () => withBusy(`unstake:${p.id}`, () => api.requestUnstake(p.id)) };
                     }
                     return (
-                      <div key={p.id} className="flex items-center justify-between rounded-xl bg-card-light px-3 py-2 text-xs">
-                        <div>
-                          <div className="font-medium text-white">{formatQty(p.amount, c.currentPrice)} {c.symbol}</div>
-                          <div className="text-muted">{p.mode === 'locked' ? 'Фиксированный лок' : 'Бессрочный'} · {statusLabel}</div>
+                      <div key={p.id} className="rounded-xl bg-card-light px-3 py-2 text-xs">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="font-medium text-white">{formatQty(p.amount, c.currentPrice)} {c.symbol}</div>
+                            <div className="text-muted">
+                              {p.mode === 'locked' ? 'Фиксированный лок' : 'Бессрочный'} · {p.aprPct}% годовых · {statusLabel}
+                            </div>
+                            {p.pendingRewards > 0 && (
+                              <div className="text-muted">Накоплено: {formatUsdd(p.pendingRewards)}</div>
+                            )}
+                          </div>
+                          {action && (
+                            <button
+                              disabled={busyKey === `unstake:${p.id}` || busyKey === `withdraw:${p.id}`}
+                              onClick={action.onClick}
+                              className="shrink-0 rounded-full border border-border px-3 py-1.5 font-semibold text-white disabled:opacity-50"
+                            >
+                              {action.label}
+                            </button>
+                          )}
                         </div>
-                        {action && (
-                          <button
-                            disabled={busyKey === `unstake:${p.id}` || busyKey === `withdraw:${p.id}`}
-                            onClick={action.onClick}
-                            className="shrink-0 rounded-full border border-border px-3 py-1.5 font-semibold text-white disabled:opacity-50"
-                          >
-                            {action.label}
-                          </button>
+                        {canBreakLock && (
+                          <div className="mt-2 flex items-center justify-between border-t border-border pt-2">
+                            <span className="text-muted">Досрочно: доход сгорит, вернётся только тело</span>
+                            <button
+                              disabled={busyKey === `break:${p.id}`}
+                              onClick={() => withBusy(`break:${p.id}`, () => api.breakLock(p.id))}
+                              className="shrink-0 rounded-full border border-negative/30 px-3 py-1.5 font-semibold text-negative disabled:opacity-50"
+                            >
+                              Прервать
+                            </button>
+                          </div>
                         )}
                       </div>
                     );
@@ -139,13 +160,13 @@ export function FarmingScreen() {
                     onClick={() => updateForm(c.coinId, { mode: 'flexible' })}
                     className={`flex-1 rounded-lg py-1.5 text-xs font-semibold transition-colors ${form.mode === 'flexible' ? 'bg-accent-to/20 text-accent-to' : 'text-muted'}`}
                   >
-                    Бессрочно ×{config.flexibleMultiplier}
+                    {config.flexibleAprPct}% (бессрочно)
                   </button>
                   <button
                     onClick={() => updateForm(c.coinId, { mode: 'locked' })}
                     className={`flex-1 rounded-lg py-1.5 text-xs font-semibold transition-colors ${form.mode === 'locked' ? 'bg-accent-to/20 text-accent-to' : 'text-muted'}`}
                   >
-                    Лок {Math.round(config.lockDurationMs / 86_400_000)} дня ×{config.lockedMultiplier}
+                    {config.lockedAprPct}% (Лок {Math.round(config.lockDurationMs / 86_400_000)} дней)
                   </button>
                 </div>
                 <div className="flex gap-2">
@@ -168,7 +189,7 @@ export function FarmingScreen() {
                 <button
                   disabled={busyKey === `stake:${c.coinId}` || !form.amount || c.sellableAmount <= 0}
                   onClick={() => doStake(c.coinId)}
-                  className="mt-2 w-full rounded-xl bg-accent-gradient py-2.5 text-sm font-semibold disabled:opacity-40"
+                  className="mt-2 w-full rounded-xl border border-border bg-card-light py-2.5 text-sm font-semibold text-white disabled:opacity-40"
                 >
                   Застейкать
                 </button>

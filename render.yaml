@@ -2,10 +2,30 @@ services:
   - type: web
     name: crypto-sim-server
     runtime: node
-    plan: free
+    plan: standard
     rootDir: server
     buildCommand: npm install --include=dev && npm run build
     startCommand: npm run start
     envVars:
       - key: NODE_ENV
         value: production
+      - key: PGDATA_DIR
+        value: /var/data/pgdata
+    disk:
+      name: pgdata
+      mountPath: /var/data
+      sizeGB: 1
+
+  - type: web
+    name: crypto-sim-client
+    runtime: static
+    rootDir: client
+    buildCommand: npm install --include=dev && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_BASE
+        value: https://crypto-sim-server.onrender.com
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

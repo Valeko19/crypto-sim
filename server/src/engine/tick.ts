@@ -2,6 +2,8 @@ import { EngineState, CoinState, MacroMode, CANDLE_INTERVAL_MS, MAX_CANDLES, REC
 import { MACRO_CONFIG, MacroPhase, nextPhase, fearGreedLabel } from './macroCycle.js';
 import { repriceTo, price } from './amm.js';
 import { gravityPctPerMin } from './gravity.js';
+import { logReturnToDriftPctPerMin } from './driftMath.js';
+import { maybeTriggerNews, newsDriftContribution, advanceNewsEvent } from './news.js';
 
 const TICK_MS = 1000;
 const FIVE_MIN_MS = 5 * 60_000;
@@ -168,12 +170,6 @@ function modeRateFloorPctPerMin(state: EngineState): number {
   const [volMin, volMax] = state.coins['btcr'].config.volPerMinPct;
   const ambientVolPerMin = (volMin + volMax) / 2;
   return ambientVolPerMin * MACRO_CONFIG[state.macroPhase].volMultiplier * MODE_RATE_FLOOR_FACTOR;
-}
-
-// Converts a target log-return, to be achieved over `ticks` ticks, into the
-// existing "%/min" drift convention used throughout the tick loop.
-function logReturnToDriftPctPerMin(logReturn: number, ticks: number): number {
-  return (logReturn / Math.max(1, ticks)) * 100 * 60;
 }
 
 function modeDurationTicks(state: EngineState, fracRange: [number, number]): number {
@@ -403,6 +399,7 @@ export function tick(state: EngineState) {
   const now = Date.now();
   maybeAdvanceMacroPhase(state);
   updateMacroMode(state);
+  maybeTriggerNews(state);
   state.macroPhaseDriftPctPerMin = macroDriftForTick(state);
 
   const btcr = state.coins['btcr'];
@@ -456,7 +453,12 @@ export function tick(state: EngineState) {
     // noise term so it isn't fed into that term's scaling, and kept fully
     // independent of the macro phase/mode machine above.
     const gravityContribution = gravityPctPerMin(cs) / 60;
-    const totalPct = driftPctPerTick + baseNoiseContribution + relativeNoiseContribution + stumbleContribution + gravityContribution;
+    // Global news shock (see engine/news.ts) — same category-scaling factor as
+    // macro drift, added straight into totalPct like gravity, never into
+    // driftPctPerTick/relativeNoiseContribution (that term is calibrated
+    // against ambient drift orders of magnitude smaller than a news ramp).
+    const newsContribution = newsDriftContribution(state, cfg);
+    const totalPct = driftPctPerTick + baseNoiseContribution + relativeNoiseContribution + stumbleContribution + gravityContribution + newsContribution;
 
     cs.lastTick = {
       macroDriftPct: macroDriftContribution,
@@ -465,6 +467,7 @@ export function tick(state: EngineState) {
       relativeNoisePct: relativeNoiseContribution,
       stumblePct: stumbleContribution,
       gravityPct: gravityContribution,
+      newsPct: newsContribution,
       totalPct,
     };
 
@@ -476,6 +479,8 @@ export function tick(state: EngineState) {
     updateCandle(cs, state);
     updateRecentHistory(cs, now);
   }
+
+  advanceNewsEvent(state);
 
   // Fear & greed: phase base, nudged by BTCR's recent (5 min window) momentum.
   const btcrMove = (() => {

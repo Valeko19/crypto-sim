@@ -4,9 +4,8 @@ import { COINS, COIN_MAP } from '../config/coins.js';
 import { rankForNetWorth, leagueIndex, RANKS } from '../config/ranks.js';
 import {
   getHoldings, getPlayer, listNpcBots, LOCAL_PLAYER_ID,
-  getStakingPositions, getFeePool, getAllOpenStakingPositions, isPositionReserved,
+  getStakingPositions, isPositionReserved, effectiveApr,
 } from '../db/queries.js';
-import { STAKING_LOCKED_MULTIPLIER, STAKING_FLEXIBLE_MULTIPLIER } from '../config/staking.js';
 
 export interface HoldingView {
   coinId: string;
@@ -122,7 +121,7 @@ export interface StakingPositionView {
   unstakeRequestedAt: string | null;
   unstakeAvailableAt: string | null;
   reserved: boolean; // still locked-in / cooling down — can't sell or withdraw
-  effectiveMultiplier: number;
+  aprPct: number;
   pendingRewards: number;
 }
 
@@ -134,23 +133,15 @@ export interface StakingCoinView {
   currentPrice: number;
   holdingAmount: number;
   sellableAmount: number;
-  poolUsdd: number;
-  totalStakedAllPlayers: number;
   positions: StakingPositionView[];
-  pendingRewards: number;
+  pendingRewards: number; // claimable now — flexible positions only, see claimFlexibleCoinRewards
 }
 
 export async function computeStaking(state: EngineState, playerId: string): Promise<StakingCoinView[]> {
   const holdingRows = await getHoldings(playerId);
   const holdingByCoinId = new Map(holdingRows.map(h => [h.coin_id, h.amount]));
   const playerPositions = await getStakingPositions(playerId);
-  const allPositions = await getAllOpenStakingPositions();
   const now = Date.now();
-
-  const totalStakedByCoin = new Map<string, number>();
-  for (const p of allPositions) {
-    totalStakedByCoin.set(p.coin_id, (totalStakedByCoin.get(p.coin_id) ?? 0) + p.amount);
-  }
 
   const result: StakingCoinView[] = [];
   for (const cfg of COINS) {
@@ -159,27 +150,19 @@ export async function computeStaking(state: EngineState, playerId: string): Prom
     const reservedAmount = positionsForCoin
       .filter(p => isPositionReserved(p, now))
       .reduce((sum, p) => sum + p.amount, 0);
-    const poolUsdd = await getFeePool(cfg.id);
 
-    const positions: StakingPositionView[] = positionsForCoin.map(p => {
-      const reserved = isPositionReserved(p, now);
-      const effectiveMultiplier =
-        p.mode === 'locked' && p.lock_until && new Date(p.lock_until).getTime() > now
-          ? STAKING_LOCKED_MULTIPLIER
-          : STAKING_FLEXIBLE_MULTIPLIER;
-      return {
-        id: p.id,
-        amount: p.amount,
-        mode: p.mode,
-        stakedAt: p.staked_at,
-        lockUntil: p.lock_until,
-        unstakeRequestedAt: p.unstake_requested_at,
-        unstakeAvailableAt: p.unstake_available_at,
-        reserved,
-        effectiveMultiplier,
-        pendingRewards: p.pending_rewards,
-      };
-    });
+    const positions: StakingPositionView[] = positionsForCoin.map(p => ({
+      id: p.id,
+      amount: p.amount,
+      mode: p.mode,
+      stakedAt: p.staked_at,
+      lockUntil: p.lock_until,
+      unstakeRequestedAt: p.unstake_requested_at,
+      unstakeAvailableAt: p.unstake_available_at,
+      reserved: isPositionReserved(p, now),
+      aprPct: effectiveApr(p, now) * 100,
+      pendingRewards: p.pending_rewards,
+    }));
 
     result.push({
       coinId: cfg.id,
@@ -189,10 +172,12 @@ export async function computeStaking(state: EngineState, playerId: string): Prom
       currentPrice: price(state.coins[cfg.id].pool),
       holdingAmount,
       sellableAmount: Math.max(0, holdingAmount - reservedAmount),
-      poolUsdd,
-      totalStakedAllPlayers: totalStakedByCoin.get(cfg.id) ?? 0,
       positions,
-      pendingRewards: positions.reduce((sum, p) => sum + p.pendingRewards, 0),
+      // Only flexible positions' reward is independently claimable — locked
+      // positions' reward is only ever settled via withdraw (full term) or
+      // forfeited via break-lock (see routes.ts), so it must NOT be summed
+      // into the amount the "Забрать" button promises to pay out.
+      pendingRewards: positions.filter(p => p.mode === 'flexible').reduce((sum, p) => sum + p.pendingRewards, 0),
     });
   }
   return result;

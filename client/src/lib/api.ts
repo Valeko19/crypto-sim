@@ -10,6 +10,12 @@ export interface CoinListItem {
   changePct: number; // rolling change over the last few minutes, not 24h
 }
 
+export interface ActiveNews {
+  headline: string;
+  direction: 'positive' | 'negative';
+  expiresAt: number;
+}
+
 export interface MarketStatus {
   phase: string;
   phaseLabel: string;
@@ -19,6 +25,7 @@ export interface MarketStatus {
   elapsedSec: number;
   remainingSec: number;
   durationSec: number;
+  activeNews: ActiveNews | null;
 }
 
 export interface Candle { t: number; o: number; h: number; l: number; c: number; }
@@ -47,6 +54,14 @@ export interface ShopStatus {
   remainingToday: number;
 }
 
+export interface TradingBotConfig {
+  coinId: string; side: 'buy' | 'sell'; intervalMs: number; amount: number; enabled: boolean; nextRunAt: string | null;
+}
+
+export interface TradingBotStatus {
+  purchased: boolean; priceStars: number; config: TradingBotConfig | null;
+}
+
 export interface LeaderboardEntry { place: number; username: string; netWorth: number; isPlayer: boolean; }
 export interface LeaderboardView { league: string; entries: LeaderboardEntry[]; minCapital: number; totalPlayers: number; }
 export interface RankInfo { name: string; min: number; max: number | null; }
@@ -62,13 +77,13 @@ export interface StakingPositionView {
   unstakeRequestedAt: string | null;
   unstakeAvailableAt: string | null;
   reserved: boolean;
-  effectiveMultiplier: number;
+  aprPct: number;
   pendingRewards: number;
 }
 
 export interface StakingCoinView {
   coinId: string; symbol: string; name: string; iconUrl: string; currentPrice: number;
-  holdingAmount: number; sellableAmount: number; poolUsdd: number; totalStakedAllPlayers: number;
+  holdingAmount: number; sellableAmount: number;
   positions: StakingPositionView[]; pendingRewards: number;
 }
 
@@ -117,7 +132,7 @@ export const api = {
   }),
   getStaking: () => req<{
     coins: StakingCoinView[];
-    config: { flexibleMultiplier: number; lockedMultiplier: number; lockDurationMs: number; flexibleCooldownMs: number };
+    config: { flexibleAprPct: number; lockedAprPct: number; lockDurationMs: number; flexibleCooldownMs: number };
   }>('/staking'),
   stake: (coinId: string, amount: number, mode: StakingMode) => req<{ success: boolean; position: StakingPositionView }>(
     '/staking/stake', { method: 'POST', body: JSON.stringify({ coinId, amount, mode }) }
@@ -128,7 +143,18 @@ export const api = {
   withdrawStaking: (positionId: string) => req<{ success: boolean }>(
     '/staking/withdraw', { method: 'POST', body: JSON.stringify({ positionId }) }
   ),
+  breakLock: (positionId: string) => req<{ success: boolean; amount: number }>(
+    '/staking/break-lock', { method: 'POST', body: JSON.stringify({ positionId }) }
+  ),
   claimStakingRewards: (coinId: string) => req<{ success: boolean; amount: number }>(
     '/staking/claim', { method: 'POST', body: JSON.stringify({ coinId }) }
+  ),
+  getBotStatus: () => req<TradingBotStatus>('/bot'),
+  purchaseBot: () => req<{ success: boolean }>('/shop/purchase-bot', { method: 'POST' }),
+  configureBot: (coinId: string, side: 'buy' | 'sell', intervalMs: number, amount: number) => req<{ success: boolean }>(
+    '/bot/config', { method: 'POST', body: JSON.stringify({ coinId, side, intervalMs, amount }) }
+  ),
+  toggleBot: (enabled: boolean) => req<{ success: boolean }>(
+    '/bot/toggle', { method: 'POST', body: JSON.stringify({ enabled }) }
   ),
 };

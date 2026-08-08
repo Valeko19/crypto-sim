@@ -1,17 +1,33 @@
 import { useEffect, useState } from 'react';
-import { api, ShopStatus } from '../lib/api';
+import { api, ShopStatus, TradingBotStatus } from '../lib/api';
 import { formatCompact, formatUsdd } from '../lib/format';
 
 export function ShopScreen() {
   const [status, setStatus] = useState<ShopStatus | null>(null);
+  const [botStatus, setBotStatus] = useState<TradingBotStatus | null>(null);
   const [stars, setStars] = useState(450);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
   function load() {
     api.getShopStatus().then(setStatus);
+    api.getBotStatus().then(setBotStatus);
   }
   useEffect(load, []);
+
+  async function buyBot() {
+    setBusy(true);
+    setMessage(null);
+    try {
+      await api.purchaseBot();
+      setMessage('Торговый бот разблокирован');
+      load();
+    } catch (e: any) {
+      setMessage(e.message ?? 'Ошибка покупки');
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function buy(starsAmount: number, packageId?: string) {
     setBusy(true);
@@ -88,6 +104,31 @@ export function ShopScreen() {
           </button>
         ))}
       </div>
+
+      {botStatus && (
+        <>
+          <h2 className="mb-2 mt-6 text-sm font-medium text-muted">Инвентарь</h2>
+          <div className="flex gap-3">
+            <button
+              disabled={busy || botStatus.purchased}
+              onClick={buyBot}
+              title={botStatus.purchased ? 'Торговый бот — куплен' : `Торговый бот — ${botStatus.priceStars} звёзд`}
+              className={`relative flex h-16 w-16 items-center justify-center rounded-xl border text-2xl transition-colors disabled:opacity-100 ${
+                botStatus.purchased ? 'border-accent-to/50 bg-card-light' : 'border-border bg-card hover:border-accent-to'
+              }`}
+            >
+              🤖
+              {botStatus.purchased ? (
+                <span className="absolute -bottom-1.5 -right-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-positive text-[10px]">✓</span>
+              ) : (
+                <span className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border border-border bg-card-light px-1.5 py-0.5 text-[9px] text-muted">
+                  ★{botStatus.priceStars}
+                </span>
+              )}
+            </button>
+          </div>
+        </>
+      )}
 
       {message && <div className="mt-4 text-center text-sm text-muted">{message}</div>}
     </div>
