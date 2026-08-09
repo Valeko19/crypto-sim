@@ -1,7 +1,8 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Server } from 'node:http';
 import { resolveIdentity } from '../auth/telegram.js';
-import { ensurePlayer } from '../db/queries.js';
+import { isBetaAllowed, BETA_DENIED_MESSAGE } from '../auth/beta.js';
+import { ensurePlayer, getPlayer } from '../db/queries.js';
 
 declare module 'ws' {
   interface WebSocket {
@@ -55,6 +56,15 @@ export function createWsServer(httpServer: Server) {
         if (msg.type !== 'auth') return;
         const identity = resolveIdentity(msg.initData, msg.devPlayerId);
         if (!identity) return ws.close();
+
+        // Same beta-gate as the REST middleware — applied here too so it
+        // can't be bypassed by connecting straight over WS instead of REST.
+        const existing = await getPlayer(identity.playerId);
+        if (!existing && !isBetaAllowed(identity)) {
+          ws.send(JSON.stringify({ type: 'auth_error', payload: { error: BETA_DENIED_MESSAGE } }));
+          return ws.close();
+        }
+
         await ensurePlayer(identity.playerId, identity.username);
         ws.playerId = identity.playerId;
         clearTimeout(timeout);
