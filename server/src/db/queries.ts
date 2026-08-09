@@ -2,8 +2,6 @@ import { randomUUID } from 'node:crypto';
 import { db } from './index.js';
 import { StakingMode, STAKING_FLEXIBLE_APR, STAKING_LOCKED_APR } from '../config/staking.js';
 
-export const LOCAL_PLAYER_ID = 'local_player';
-
 export interface PlayerRow {
   id: string;
   username: string;
@@ -20,15 +18,36 @@ export interface HoldingRow {
   avg_buy_price: number;
 }
 
-export async function ensureLocalPlayer(): Promise<PlayerRow> {
-  const existing = await db.query<PlayerRow>('SELECT * FROM players WHERE id = $1', [LOCAL_PLAYER_ID]);
-  if (existing.rows.length > 0) return existing.rows[0];
+// Single atomic upsert — closes the race between two near-simultaneous first
+// requests for the same brand-new id, and keeps username fresh if the player
+// renamed themselves in Telegram since their last visit (previously it was
+// only ever written on INSERT and never touched again).
+export async function ensurePlayer(id: string, username: string): Promise<PlayerRow> {
   const STARTING_BONUS = 100;
-  const inserted = await db.query<PlayerRow>(
-    `INSERT INTO players (id, username, usdd_balance) VALUES ($1, $2, $3) RETURNING *`,
-    [LOCAL_PLAYER_ID, '@local_player', STARTING_BONUS]
+  const res = await db.query<PlayerRow>(
+    `INSERT INTO players (id, username, usdd_balance) VALUES ($1, $2, $3)
+     ON CONFLICT (id) DO UPDATE SET username = $2
+     RETURNING *`,
+    [id, username, STARTING_BONUS]
   );
-  return inserted.rows[0];
+  return res.rows[0];
+}
+
+// For call sites that only need the row to exist and don't know the real
+// username (the trading-bot background job calls executeTrade outside any
+// HTTP/WS auth handshake) — never touches username, so it can't clobber a
+// real Telegram name with a placeholder. Use ensurePlayer above wherever the
+// real username is actually known (REST middleware, WS auth handshake).
+export async function ensurePlayerExists(id: string): Promise<void> {
+  await db.query(
+    `INSERT INTO players (id, username, usdd_balance) VALUES ($1, $1, 100)
+     ON CONFLICT (id) DO NOTHING`,
+    [id]
+  );
+}
+
+export async function getAllPlayers(): Promise<PlayerRow[]> {
+  return (await db.query<PlayerRow>('SELECT * FROM players')).rows;
 }
 
 export async function getPlayer(id: string): Promise<PlayerRow> {
@@ -39,6 +58,10 @@ export async function getPlayer(id: string): Promise<PlayerRow> {
 export async function getHoldings(playerId: string): Promise<HoldingRow[]> {
   const res = await db.query<HoldingRow>('SELECT * FROM player_holdings WHERE player_id = $1', [playerId]);
   return res.rows;
+}
+
+export async function getAllHoldings(): Promise<HoldingRow[]> {
+  return (await db.query<HoldingRow>('SELECT * FROM player_holdings')).rows;
 }
 
 export async function getHolding(playerId: string, coinId: string): Promise<HoldingRow | null> {

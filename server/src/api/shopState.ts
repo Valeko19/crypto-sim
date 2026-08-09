@@ -1,22 +1,17 @@
 import { DAILY_LIMIT_USDD } from '../config/shop.js';
 
-let currentDay = new Date().toISOString().slice(0, 10);
-let spentToday = 0;
+const spendByPlayer = new Map<string, { day: string; spent: number }>();
 
-function rollDayIfNeeded() {
+export function remainingToday(playerId: string): number {
   const today = new Date().toISOString().slice(0, 10);
-  if (today !== currentDay) {
-    currentDay = today;
-    spentToday = 0;
-  }
+  const entry = spendByPlayer.get(playerId);
+  const spent = entry?.day === today ? entry.spent : 0;
+  return Math.max(0, DAILY_LIMIT_USDD - spent);
 }
 
-export function remainingToday(): number {
-  rollDayIfNeeded();
-  return Math.max(0, DAILY_LIMIT_USDD - spentToday);
-}
-
-export function recordSpend(usddAmount: number): void {
-  rollDayIfNeeded();
-  spentToday += usddAmount;
+export function recordSpend(playerId: string, usddAmount: number): void {
+  const today = new Date().toISOString().slice(0, 10);
+  const entry = spendByPlayer.get(playerId);
+  if (entry?.day === today) entry.spent += usddAmount;
+  else spendByPlayer.set(playerId, { day: today, spent: usddAmount });
 }

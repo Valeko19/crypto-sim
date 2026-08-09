@@ -3,9 +3,9 @@ import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import App from './App';
 import './index.css';
-import { initTelegramStub } from './lib/telegram';
+import { initTelegram } from './lib/telegram';
 
-initTelegramStub();
+initTelegram();
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

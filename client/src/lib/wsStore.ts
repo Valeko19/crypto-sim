@@ -1,4 +1,5 @@
 import { MarketStatus, PortfolioView, Candle, API_BASE } from './api';
+import { getIdentityForWs } from './telegram';
 
 export interface LivePriceInfo { price: number; changePct: number; }
 
@@ -27,6 +28,13 @@ function connect() {
     ? `${API_BASE.replace(/^http/, 'ws')}/ws`
     : `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`;
   const ws = new WebSocket(wsUrl);
+
+  // Identity is sent as the first message after open, not a query param on
+  // wsUrl — the browser WebSocket API can't set custom headers, and a query
+  // string would land in default access logs (unlike the REST header path).
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ type: 'auth', ...getIdentityForWs() }));
+  };
 
   ws.onmessage = ev => {
     try {

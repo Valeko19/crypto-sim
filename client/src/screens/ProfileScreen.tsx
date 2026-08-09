@@ -6,7 +6,6 @@ import { CoinAvatar } from '../components/CoinAvatar';
 import { formatUsdd, formatPct, pctColorClass, formatQty } from '../lib/format';
 import { rankEmoji } from '../lib/rankVisuals';
 import { ShareIcon } from '../components/icons';
-import { LOCAL_PLAYER_USERNAME } from '../lib/telegram';
 
 export function ProfileScreen() {
   const [portfolio, setPortfolio] = useState<PortfolioView | null>(null);
@@ -40,7 +39,7 @@ export function ProfileScreen() {
 
   if (!current) return <div className="p-4 text-muted">Загрузка…</div>;
 
-  const initials = LOCAL_PLAYER_USERNAME.replace('@', '').slice(0, 2).toUpperCase();
+  const initials = current.username.replace('@', '').slice(0, 2).toUpperCase();
 
   // Portfolio rows (USDD cash + every coin holding) graded top-to-bottom by
   // value, largest first — USDD is just another balance for this ordering,
@@ -62,7 +61,7 @@ export function ProfileScreen() {
           </span>
         </div>
         <div className="flex-1">
-          <div className="font-semibold">{LOCAL_PLAYER_USERNAME}</div>
+          <div className="font-semibold">{current.username}</div>
           <div className="text-sm text-muted">Ранг: {rankEmoji(current.rank)} {current.rank}</div>
         </div>
         <Link to="/leaderboard" className="text-right transition-opacity hover:opacity-80">

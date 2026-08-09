@@ -1,3 +1,5 @@
+import { getIdentityHeaders } from './telegram';
+
 export interface CoinListItem {
   id: string;
   symbol: string;
@@ -38,6 +40,7 @@ export interface HoldingView {
 export interface PortfolioView {
   usddBalance: number; holdings: HoldingView[]; netWorth: number; rank: string;
   league: string; leagueIndex: number; tradesCount: number; totalVolume: number; realizedPnl: number;
+  username: string;
 }
 
 export interface QuestsView {
@@ -95,8 +98,8 @@ export const API_BASE = import.meta.env.VITE_API_BASE ?? '';
 
 async function req<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}/api${path}`, {
-    headers: { 'Content-Type': 'application/json' },
     ...options,
+    headers: { 'Content-Type': 'application/json', ...getIdentityHeaders(), ...options?.headers },
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));

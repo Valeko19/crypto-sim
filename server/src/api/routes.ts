@@ -14,8 +14,9 @@ import { DAILY_BONUS_AMOUNT, EMISSION_THRESHOLDS } from '../config/quests.js';
 import { SHOP_PACKAGES, STARS_TO_USDD_RATE } from '../config/shop.js';
 import { TRADING_BOT_PRICE_STARS, MIN_BOT_INTERVAL_MS } from '../config/tradingBot.js';
 import { remainingToday, recordSpend } from './shopState.js';
+import { resolvePlayer } from './middleware.js';
 import {
-  ensureLocalPlayer, LOCAL_PLAYER_ID, getHolding,
+  getHolding,
   getQuestProgress, claimQuestRow, reservedStakedAmount,
   createStakingPosition, getPositionById, requestUnstakePosition, deleteStakingPosition,
   withdrawStakingPosition, claimFlexibleCoinRewards, isPositionReserved,
@@ -29,6 +30,8 @@ import {
 
 export function createRouter(state: EngineState) {
   const router = Router();
+
+  router.use(resolvePlayer);
 
   router.get('/coins', (req, res) => {
     const list = COINS.map(cfg => {
@@ -94,7 +97,7 @@ export function createRouter(state: EngineState) {
   router.post('/trade', async (req, res) => {
     const { coinId, side, amountUsdd, amountCoin } = req.body;
     try {
-      const result = await executeTrade(state, LOCAL_PLAYER_ID, { coinId, side, amountUsdd, amountCoin });
+      const result = await executeTrade(state, req.playerId, { coinId, side, amountUsdd, amountCoin });
       res.json(result);
     } catch (e) {
       const status = e instanceof TradeError ? e.status : 400;
@@ -103,14 +106,12 @@ export function createRouter(state: EngineState) {
   });
 
   router.get('/portfolio', async (req, res) => {
-    await ensureLocalPlayer();
-    const portfolio = await computePortfolio(state, LOCAL_PLAYER_ID);
+    const portfolio = await computePortfolio(state, req.playerId);
     res.json(portfolio);
   });
 
   router.get('/staking', async (req, res) => {
-    await ensureLocalPlayer();
-    const coins = await computeStaking(state, LOCAL_PLAYER_ID);
+    const coins = await computeStaking(state, req.playerId);
     res.json({
       coins,
       config: {
@@ -123,7 +124,6 @@ export function createRouter(state: EngineState) {
   });
 
   router.post('/staking/stake', async (req, res) => {
-    await ensureLocalPlayer();
     const { coinId, amount, mode } = req.body as { coinId: string; amount: number; mode: StakingMode };
     const cs = state.coins[coinId];
     const cfg = COIN_MAP[coinId];
@@ -132,8 +132,8 @@ export function createRouter(state: EngineState) {
     const stakeAmount = Number(amount);
     if (!stakeAmount || stakeAmount <= 0) return res.status(400).json({ error: 'invalid amount' });
 
-    const holding = await getHolding(LOCAL_PLAYER_ID, coinId);
-    const reserved = await reservedStakedAmount(LOCAL_PLAYER_ID, coinId);
+    const holding = await getHolding(req.playerId, coinId);
+    const reserved = await reservedStakedAmount(req.playerId, coinId);
     const available = (holding?.amount ?? 0) - reserved;
     if (stakeAmount > available) return res.status(400).json({ error: 'insufficient sellable balance' });
 
@@ -141,15 +141,14 @@ export function createRouter(state: EngineState) {
     // USD value fixed at this moment (see engine/staking.ts) — reward accrual
     // never re-reads the coin's price again for this position.
     const stakePrice = price(cs.pool);
-    const position = await createStakingPosition(LOCAL_PLAYER_ID, coinId, stakeAmount, mode, lockUntil, stakePrice);
+    const position = await createStakingPosition(req.playerId, coinId, stakeAmount, mode, lockUntil, stakePrice);
     res.json({ success: true, position });
   });
 
   router.post('/staking/request-unstake', async (req, res) => {
-    await ensureLocalPlayer();
     const { positionId } = req.body as { positionId: string };
     const position = await getPositionById(positionId);
-    if (!position || position.player_id !== LOCAL_PLAYER_ID) return res.status(404).json({ error: 'position not found' });
+    if (!position || position.player_id !== req.playerId) return res.status(404).json({ error: 'position not found' });
     if (position.mode !== 'flexible') return res.status(400).json({ error: 'only flexible positions can request unstake' });
     if (position.unstake_requested_at) return res.status(400).json({ error: 'unstake already requested' });
 
@@ -159,10 +158,9 @@ export function createRouter(state: EngineState) {
   });
 
   router.post('/staking/withdraw', async (req, res) => {
-    await ensureLocalPlayer();
     const { positionId } = req.body as { positionId: string };
     const position = await getPositionById(positionId);
-    if (!position || position.player_id !== LOCAL_PLAYER_ID) return res.status(404).json({ error: 'position not found' });
+    if (!position || position.player_id !== req.playerId) return res.status(404).json({ error: 'position not found' });
     if (isPositionReserved(position, Date.now())) return res.status(400).json({ error: 'position is still locked/cooling down' });
 
     // Eligibility was checked above from the read, but the payout amount and
@@ -170,11 +168,11 @@ export function createRouter(state: EngineState) {
     // withdrawStakingPosition's comment for why (a concurrent distribution
     // tick or a double-submitted request would otherwise risk a lost or
     // double-counted reward).
-    const paidRewards = await withdrawStakingPosition(positionId, LOCAL_PLAYER_ID);
+    const paidRewards = await withdrawStakingPosition(positionId, req.playerId);
     if (paidRewards === null) return res.status(404).json({ error: 'position already withdrawn' });
     if (paidRewards > 0) {
       const { db } = await import('../db/index.js');
-      await db.query('UPDATE players SET usdd_balance = usdd_balance + $1 WHERE id = $2', [paidRewards, LOCAL_PLAYER_ID]);
+      await db.query('UPDATE players SET usdd_balance = usdd_balance + $1 WHERE id = $2', [paidRewards, req.playerId]);
     }
     res.json({ success: true });
   });
@@ -187,10 +185,9 @@ export function createRouter(state: EngineState) {
   // already-completed lock and forfeit reward that has fully vested —
   // use /staking/withdraw for that case instead.
   router.post('/staking/break-lock', async (req, res) => {
-    await ensureLocalPlayer();
     const { positionId } = req.body as { positionId: string };
     const position = await getPositionById(positionId);
-    if (!position || position.player_id !== LOCAL_PLAYER_ID) return res.status(404).json({ error: 'position not found' });
+    if (!position || position.player_id !== req.playerId) return res.status(404).json({ error: 'position not found' });
     if (position.mode !== 'locked' || !isPositionReserved(position, Date.now())) {
       return res.status(400).json({ error: 'position is not an active lock' });
     }
@@ -199,21 +196,19 @@ export function createRouter(state: EngineState) {
   });
 
   router.post('/staking/claim', async (req, res) => {
-    await ensureLocalPlayer();
     const { coinId } = req.body as { coinId: string };
     if (!COIN_MAP[coinId]) return res.status(404).json({ error: 'coin not found' });
-    const amount = await claimFlexibleCoinRewards(LOCAL_PLAYER_ID, coinId);
+    const amount = await claimFlexibleCoinRewards(req.playerId, coinId);
     if (amount > 0) {
       const { db } = await import('../db/index.js');
-      await db.query('UPDATE players SET usdd_balance = usdd_balance + $1 WHERE id = $2', [amount, LOCAL_PLAYER_ID]);
+      await db.query('UPDATE players SET usdd_balance = usdd_balance + $1 WHERE id = $2', [amount, req.playerId]);
     }
     res.json({ success: true, amount });
   });
 
   router.get('/quests', async (req, res) => {
-    await ensureLocalPlayer();
-    const portfolio = await computePortfolio(state, LOCAL_PLAYER_ID);
-    const progress = await getQuestProgress(LOCAL_PLAYER_ID);
+    const portfolio = await computePortfolio(state, req.playerId);
+    const progress = await getQuestProgress(req.playerId);
 
     const dailyRow = progress.find(p => p.quest_type === 'daily_bonus');
     const dailyClaimedAt = dailyRow?.claimed_at ? new Date(dailyRow.claimed_at) : null;
@@ -248,20 +243,18 @@ export function createRouter(state: EngineState) {
   });
 
   router.post('/quests/claim', async (req, res) => {
-    await ensureLocalPlayer();
     const { questId } = req.body as { questId: string };
 
     if (questId === 'daily_bonus') {
-      const progress = await getQuestProgress(LOCAL_PLAYER_ID);
+      const progress = await getQuestProgress(req.playerId);
       const dailyRow = progress.find(p => p.quest_type === 'daily_bonus');
       const lastClaim = dailyRow?.claimed_at ? new Date(dailyRow.claimed_at).getTime() : 0;
       if (Date.now() - lastClaim < 24 * 60 * 60 * 1000) {
         return res.status(400).json({ error: 'already claimed' });
       }
-      await claimQuestRow(LOCAL_PLAYER_ID, 'daily_bonus', 'none', 0);
-      await ensureLocalPlayer();
+      await claimQuestRow(req.playerId, 'daily_bonus', 'none', 0);
       const { db } = await import('../db/index.js');
-      await db.query('UPDATE players SET usdd_balance = usdd_balance + $1 WHERE id = $2', [DAILY_BONUS_AMOUNT, LOCAL_PLAYER_ID]);
+      await db.query('UPDATE players SET usdd_balance = usdd_balance + $1 WHERE id = $2', [DAILY_BONUS_AMOUNT, req.playerId]);
       return res.json({ success: true, amount: DAILY_BONUS_AMOUNT });
     }
 
@@ -271,20 +264,20 @@ export function createRouter(state: EngineState) {
       const def = EMISSION_THRESHOLDS.find(t => t.threshold === threshold);
       if (!def) return res.status(400).json({ error: 'invalid threshold' });
 
-      const portfolio = await computePortfolio(state, LOCAL_PLAYER_ID);
+      const portfolio = await computePortfolio(state, req.playerId);
       const holding = portfolio.holdings.find(h => h.coinId === coinId);
       if (!holding || holding.pctEmission < threshold) {
         return res.status(400).json({ error: 'insufficient emission share' });
       }
-      const progress = await getQuestProgress(LOCAL_PLAYER_ID);
+      const progress = await getQuestProgress(req.playerId);
       const already = progress.some(
         p => p.quest_type === 'emission_capture' && p.coin_id === coinId && p.threshold === threshold && p.claimed_at
       );
       if (already) return res.status(400).json({ error: 'already claimed' });
 
-      await claimQuestRow(LOCAL_PLAYER_ID, 'emission_capture', coinId, threshold);
+      await claimQuestRow(req.playerId, 'emission_capture', coinId, threshold);
       const { db } = await import('../db/index.js');
-      await db.query('UPDATE players SET usdd_balance = usdd_balance + $1 WHERE id = $2', [def.reward, LOCAL_PLAYER_ID]);
+      await db.query('UPDATE players SET usdd_balance = usdd_balance + $1 WHERE id = $2', [def.reward, req.playerId]);
       return res.json({ success: true, amount: def.reward });
     }
 
@@ -292,7 +285,7 @@ export function createRouter(state: EngineState) {
   });
 
   router.get('/shop/status', (req, res) => {
-    res.json({ packages: SHOP_PACKAGES, rate: STARS_TO_USDD_RATE, remainingToday: remainingToday() });
+    res.json({ packages: SHOP_PACKAGES, rate: STARS_TO_USDD_RATE, remainingToday: remainingToday(req.playerId) });
   });
 
   // STUB: instantly credits USDD instead of charging real Telegram Stars.
@@ -313,17 +306,15 @@ export function createRouter(state: EngineState) {
     } else {
       usddAmount = starsAmount * STARS_TO_USDD_RATE;
     }
-    if (usddAmount > remainingToday()) return res.status(400).json({ error: 'daily limit exceeded' });
+    if (usddAmount > remainingToday(req.playerId)) return res.status(400).json({ error: 'daily limit exceeded' });
 
-    await ensureLocalPlayer();
-    await processStarPayment(starsAmount, usddAmount);
-    recordSpend(usddAmount);
-    res.json({ success: true, usddCredited: usddAmount, remainingToday: remainingToday() });
+    await processStarPayment(req.playerId, starsAmount, usddAmount);
+    recordSpend(req.playerId, usddAmount);
+    res.json({ success: true, usddCredited: usddAmount, remainingToday: remainingToday(req.playerId) });
   });
 
   router.get('/bot', async (req, res) => {
-    await ensureLocalPlayer();
-    const bot = await getTradingBot(LOCAL_PLAYER_ID);
+    const bot = await getTradingBot(req.playerId);
     res.json({
       purchased: bot?.purchased ?? false,
       priceStars: TRADING_BOT_PRICE_STARS,
@@ -341,16 +332,14 @@ export function createRouter(state: EngineState) {
   // STUB: same instant-unlock idiom as processStarPayment below — no real
   // Telegram Stars charge yet.
   router.post('/shop/purchase-bot', async (req, res) => {
-    await ensureLocalPlayer();
-    const existing = await getTradingBot(LOCAL_PLAYER_ID);
+    const existing = await getTradingBot(req.playerId);
     if (existing?.purchased) return res.status(400).json({ error: 'already purchased' });
-    await markBotPurchased(LOCAL_PLAYER_ID);
+    await markBotPurchased(req.playerId);
     res.json({ success: true });
   });
 
   router.post('/bot/config', async (req, res) => {
-    await ensureLocalPlayer();
-    const bot = await getTradingBot(LOCAL_PLAYER_ID);
+    const bot = await getTradingBot(req.playerId);
     if (!bot?.purchased) return res.status(400).json({ error: 'trading bot not purchased' });
     const { coinId, side, intervalMs, amount } = req.body as {
       coinId: string; side: 'buy' | 'sell'; intervalMs: number; amount: number;
@@ -361,13 +350,12 @@ export function createRouter(state: EngineState) {
       return res.status(400).json({ error: `minimum interval is ${MIN_BOT_INTERVAL_MS}ms` });
     }
     if (!amount || Number(amount) <= 0) return res.status(400).json({ error: 'invalid amount' });
-    await configureTradingBot(LOCAL_PLAYER_ID, coinId, side, Number(intervalMs), Number(amount));
+    await configureTradingBot(req.playerId, coinId, side, Number(intervalMs), Number(amount));
     res.json({ success: true });
   });
 
   router.post('/bot/toggle', async (req, res) => {
-    await ensureLocalPlayer();
-    const bot = await getTradingBot(LOCAL_PLAYER_ID);
+    const bot = await getTradingBot(req.playerId);
     const { enabled } = req.body as { enabled: boolean };
     if (enabled) {
       if (!bot?.purchased || !bot.coin_id || !bot.side || !bot.interval_ms || !bot.amount) {
@@ -376,14 +364,14 @@ export function createRouter(state: EngineState) {
     } else if (!bot?.purchased) {
       return res.status(400).json({ error: 'trading bot not purchased' });
     }
-    await setTradingBotEnabled(LOCAL_PLAYER_ID, Boolean(enabled));
+    await setTradingBotEnabled(req.playerId, Boolean(enabled));
     res.json({ success: true });
   });
 
   router.get('/leaderboard', async (req, res) => {
     const league = String(req.query.league ?? RANKS[0].name);
     if (!RANKS.some(r => r.name === league)) return res.status(400).json({ error: 'unknown league' });
-    const result = await computeLeaderboard(state, league);
+    const result = await computeLeaderboard(state, league, req.playerId);
     res.json({ league, ...result });
   });
 
@@ -441,7 +429,7 @@ export function createRouter(state: EngineState) {
 
 // STUB: real Telegram Stars Invoice API integration point. Today this simply
 // credits the player's balance; swap the body for a real charge + webhook confirm.
-async function processStarPayment(starsAmount: number, usddAmount: number): Promise<void> {
+async function processStarPayment(playerId: string, starsAmount: number, usddAmount: number): Promise<void> {
   const { db } = await import('../db/index.js');
-  await db.query('UPDATE players SET usdd_balance = usdd_balance + $1 WHERE id = $2', [usddAmount, LOCAL_PLAYER_ID]);
+  await db.query('UPDATE players SET usdd_balance = usdd_balance + $1 WHERE id = $2', [usddAmount, playerId]);
 }

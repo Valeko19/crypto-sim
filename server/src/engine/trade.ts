@@ -1,7 +1,7 @@
 import { EngineState } from './state.js';
 import { buyWithUsdd, sellCoin, price } from './amm.js';
 import { COIN_MAP, tradeFeePct, MIN_TRADE_USDD } from '../config/coins.js';
-import { ensureLocalPlayer, getPlayer, applyBuy, applySell, getHolding, reservedStakedAmount } from '../db/queries.js';
+import { ensurePlayerExists, getPlayer, applyBuy, applySell, getHolding, reservedStakedAmount } from '../db/queries.js';
 
 export class TradeError extends Error {
   status: number;
@@ -31,7 +31,11 @@ async function executeTradeUnlocked(state: EngineState, playerId: string, params
   const cfg = COIN_MAP[coinId];
   if (!cs || !cfg) throw new TradeError('coin not found', 404);
 
-  await ensureLocalPlayer();
+  // Runs both from the /trade route (already ensured by the auth middleware)
+  // and the trading-bot background job (outside any request/handshake, where
+  // the real username isn't known) — must self-ensure without ever touching
+  // username, so it can't clobber a real Telegram name with a placeholder.
+  await ensurePlayerExists(playerId);
   const player = await getPlayer(playerId);
 
   if (side === 'buy') {

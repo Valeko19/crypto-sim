@@ -7,11 +7,11 @@ import { MACRO_CONFIG } from './engine/macroCycle.js';
 import { price } from './engine/amm.js';
 import { COINS } from './config/coins.js';
 import { initDb } from './db/index.js';
-import { ensureLocalPlayer, LOCAL_PLAYER_ID, getAllPoolSnapshots, savePoolSnapshot, getTotalHeldForCoin } from './db/queries.js';
+import { getAllPoolSnapshots, savePoolSnapshot, getTotalHeldForCoin } from './db/queries.js';
 import { seedNpcBotsIfNeeded, driftNpcBots } from './npc/bots.js';
 import { createRouter } from './api/routes.js';
 import { createWsServer } from './ws/server.js';
-import { computePortfolio } from './api/helpers.js';
+import { computeAllPortfolios } from './api/helpers.js';
 import { distributeStakingRewards } from './engine/staking.js';
 import { STAKING_DISTRIBUTION_INTERVAL_MS } from './config/staking.js';
 import { runTradingBots } from './engine/tradingBot.js';
@@ -21,7 +21,6 @@ const PORT = process.env.PORT ? Number(process.env.PORT) : 8787;
 
 async function main() {
   await initDb();
-  await ensureLocalPlayer();
   await seedNpcBotsIfNeeded();
 
   const state = createInitialState();
@@ -68,7 +67,7 @@ async function main() {
   app.use('/api', createRouter(state));
 
   const httpServer = http.createServer(app);
-  const { broadcast } = createWsServer(httpServer);
+  const { broadcast, sendToPlayer, getConnectedPlayerIds } = createWsServer(httpServer);
 
   startEngineLoop(state, () => {
     const coins = COINS.map(cfg => {
@@ -91,8 +90,13 @@ async function main() {
       },
     });
 
-    computePortfolio(state, LOCAL_PLAYER_ID)
-      .then(portfolio => broadcast('portfolio_updates', portfolio))
+    computeAllPortfolios(state)
+      .then(portfolios => {
+        for (const playerId of getConnectedPlayerIds()) {
+          const view = portfolios.get(playerId);
+          if (view) sendToPlayer(playerId, 'portfolio_updates', view);
+        }
+      })
       .catch(() => {});
 
     // Push the in-progress candle for every coin each tick so the chart updates

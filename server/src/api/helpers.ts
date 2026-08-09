@@ -3,7 +3,7 @@ import { price } from '../engine/amm.js';
 import { COINS, COIN_MAP } from '../config/coins.js';
 import { rankForNetWorth, leagueIndex, RANKS } from '../config/ranks.js';
 import {
-  getHoldings, getPlayer, listNpcBots, LOCAL_PLAYER_ID,
+  getHoldings, getAllHoldings, getPlayer, getAllPlayers, listNpcBots, PlayerRow, HoldingRow,
   getStakingPositions, isPositionReserved, effectiveApr,
 } from '../db/queries.js';
 
@@ -30,12 +30,10 @@ export interface PortfolioView {
   tradesCount: number;
   totalVolume: number;
   realizedPnl: number;
+  username: string;
 }
 
-export async function computePortfolio(state: EngineState, playerId: string): Promise<PortfolioView> {
-  const player = await getPlayer(playerId);
-  const holdingRows = await getHoldings(playerId);
-
+function buildPortfolioView(state: EngineState, player: PlayerRow, holdingRows: HoldingRow[]): PortfolioView {
   const holdings: HoldingView[] = holdingRows.map(h => {
     const cfg = COIN_MAP[h.coin_id];
     const currentPrice = price(state.coins[h.coin_id].pool);
@@ -68,7 +66,36 @@ export async function computePortfolio(state: EngineState, playerId: string): Pr
     tradesCount: player.trades_count,
     totalVolume: player.total_volume,
     realizedPnl: player.realized_pnl,
+    username: player.username,
   };
+}
+
+export async function computePortfolio(state: EngineState, playerId: string): Promise<PortfolioView> {
+  const player = await getPlayer(playerId);
+  const holdingRows = await getHoldings(playerId);
+  return buildPortfolioView(state, player, holdingRows);
+}
+
+// One pass over ALL players — 2 DB queries regardless of player count, instead
+// of 2 queries PER player. Used by the tick loop (every connected player's
+// portfolio push, once a second) and the leaderboard, both of which need
+// every player's view at once — the per-player computePortfolio above would
+// turn either into an O(players) query storm against PGlite's single
+// embedded connection.
+export async function computeAllPortfolios(state: EngineState): Promise<Map<string, PortfolioView>> {
+  const players = await getAllPlayers();
+  const allHoldings = await getAllHoldings();
+  const holdingsByPlayer = new Map<string, HoldingRow[]>();
+  for (const h of allHoldings) {
+    const list = holdingsByPlayer.get(h.player_id) ?? [];
+    list.push(h);
+    holdingsByPlayer.set(h.player_id, list);
+  }
+  const result = new Map<string, PortfolioView>();
+  for (const p of players) {
+    result.set(p.id, buildPortfolioView(state, p, holdingsByPlayer.get(p.id) ?? []));
+  }
+  return result;
 }
 
 export interface LeaderboardEntry {
@@ -80,22 +107,21 @@ export interface LeaderboardEntry {
 
 export async function computeLeaderboard(
   state: EngineState,
-  leagueName: string
+  leagueName: string,
+  viewerPlayerId: string
 ): Promise<{ entries: LeaderboardEntry[]; minCapital: number; totalPlayers: number }> {
   const bots = await listNpcBots();
   const leagueBots = bots.filter(b => b.league === leagueName);
 
-  const portfolio = await computePortfolio(state, LOCAL_PLAYER_ID);
-  const includesPlayer = portfolio.league === leagueName;
+  const portfolios = await computeAllPortfolios(state);
+  const realEntries = [...portfolios.entries()]
+    .filter(([, v]) => v.league === leagueName)
+    .map(([id, v]) => ({ username: v.username, netWorth: v.netWorth, isPlayer: id === viewerPlayerId }));
 
-  const combined: { username: string; netWorth: number; isPlayer: boolean }[] = leagueBots.map(b => ({
-    username: b.username,
-    netWorth: b.simulated_net_worth,
-    isPlayer: false,
-  }));
-  if (includesPlayer) {
-    combined.push({ username: 'Вы', netWorth: portfolio.netWorth, isPlayer: true });
-  }
+  const combined: { username: string; netWorth: number; isPlayer: boolean }[] = [
+    ...leagueBots.map(b => ({ username: b.username, netWorth: b.simulated_net_worth, isPlayer: false })),
+    ...realEntries,
+  ];
   combined.sort((a, b) => b.netWorth - a.netWorth);
 
   const entries: LeaderboardEntry[] = combined.map((c, i) => ({ place: i + 1, ...c }));
