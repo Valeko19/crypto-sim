@@ -55,6 +55,7 @@ export interface ShopStatus {
   packages: { id: string; usddAmount: number; stars: number; bonusPct: number; popular?: boolean }[];
   rate: number;
   remainingToday: number;
+  dailyLimit: number;
 }
 
 export interface TradingBotConfig {
@@ -130,9 +131,6 @@ export const api = {
     req<{ coinAmount: number; usddAmount: number; avgPrice: number; slippagePct: number; fee: number }>(
       '/trade', { method: 'POST', body: JSON.stringify(body) }
     ),
-  forceDebugPhase: (phase: string) => req<{ success: boolean }>('/debug/phase', {
-    method: 'POST', body: JSON.stringify({ phase }),
-  }),
   getStaking: () => req<{
     coins: StakingCoinView[];
     config: { flexibleAprPct: number; lockedAprPct: number; lockDurationMs: number; flexibleCooldownMs: number };

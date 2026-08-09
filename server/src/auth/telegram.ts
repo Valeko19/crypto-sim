@@ -3,8 +3,10 @@ import { createHmac } from 'node:crypto';
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 // Dev mode is only allowed outside production (or an explicit ALLOW_DEV_AUTH=1)
 // — a missing/mistyped token on a real deploy should fail loudly, not
-// silently downgrade to a mode with no signature check at all.
-const DEV_AUTH_ALLOWED = process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_AUTH === '1';
+// silently downgrade to a mode with no signature check at all. Also reused
+// by routes.ts to gate debug/QA routes that mutate shared market state
+// (e.g. /debug/phase) — those must never be reachable by real players either.
+export const DEV_AUTH_ALLOWED = process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_AUTH === '1';
 
 export interface Identity {
   playerId: string;

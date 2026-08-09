@@ -95,17 +95,19 @@ export function MarketScreen() {
       {SHOW_DEBUG_PHASE && (
         <div className="mt-4 flex flex-wrap gap-2">
           {DEBUG_PHASES.map(d => (
-            <button
+            // Read-only phase indicator — NOT a control. Must never call
+            // anything that mutates market state (see server/src/api/routes.ts
+            // /debug/phase, which is itself gated off in production regardless).
+            <span
               key={d.phase}
-              onClick={() => api.forceDebugPhase(d.phase)}
-              className={`rounded-full border px-3 py-1.5 text-xs transition-colors ${
+              className={`cursor-default select-none rounded-full border px-3 py-1.5 text-xs ${
                 status?.phase === d.phase
                   ? 'border-transparent bg-accent-gradient text-white'
-                  : 'border-border text-muted hover:text-white'
+                  : 'border-border text-muted'
               }`}
             >
               {d.label}
-            </button>
+            </span>
           ))}
         </div>
       )}

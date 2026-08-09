@@ -11,10 +11,11 @@ import { MACRO_CONFIG, MACRO_ORDER, MacroPhase } from '../engine/macroCycle.js';
 import { COINS, COIN_MAP, tradeFeePct, sectionOf } from '../config/coins.js';
 import { RANKS } from '../config/ranks.js';
 import { DAILY_BONUS_AMOUNT, EMISSION_THRESHOLDS } from '../config/quests.js';
-import { SHOP_PACKAGES, STARS_TO_USDD_RATE } from '../config/shop.js';
+import { SHOP_PACKAGES, STARS_TO_USDD_RATE, DAILY_LIMIT_USDD } from '../config/shop.js';
 import { TRADING_BOT_PRICE_STARS, MIN_BOT_INTERVAL_MS } from '../config/tradingBot.js';
 import { remainingToday, recordSpend } from './shopState.js';
 import { resolvePlayer } from './middleware.js';
+import { DEV_AUTH_ALLOWED } from '../auth/telegram.js';
 import {
   getHolding,
   getQuestProgress, claimQuestRow, reservedStakedAmount,
@@ -285,7 +286,12 @@ export function createRouter(state: EngineState) {
   });
 
   router.get('/shop/status', (req, res) => {
-    res.json({ packages: SHOP_PACKAGES, rate: STARS_TO_USDD_RATE, remainingToday: remainingToday(req.playerId) });
+    res.json({
+      packages: SHOP_PACKAGES,
+      rate: STARS_TO_USDD_RATE,
+      remainingToday: remainingToday(req.playerId),
+      dailyLimit: DAILY_LIMIT_USDD,
+    });
   });
 
   // STUB: instantly credits USDD instead of charging real Telegram Stars.
@@ -379,7 +385,12 @@ export function createRouter(state: EngineState) {
     res.json({ ranks: RANKS.map(r => ({ name: r.name, min: r.min, max: Number.isFinite(r.max) ? r.max : null })) });
   });
 
+  // Both routes below mutate SHARED market state (affects every player, not
+  // just the caller) — gated behind the same "safe dev environment" flag as
+  // the auth dev-fallback, so they're genuinely unreachable by real players
+  // once deployed (NODE_ENV=production), not just hidden behind a UI toggle.
   router.post('/debug/phase', (req, res) => {
+    if (!DEV_AUTH_ALLOWED) return res.status(403).json({ error: 'not available' });
     const { phase } = req.body as { phase: MacroPhase };
     if (!MACRO_ORDER.includes(phase)) return res.status(400).json({ error: 'unknown phase' });
     forcePhase(state, phase);
@@ -389,6 +400,7 @@ export function createRouter(state: EngineState) {
   // Forces a news event immediately instead of waiting the real 3-6 minute
   // gap — for manual QA only, same idiom as /debug/phase above.
   router.post('/debug/force-news', (req, res) => {
+    if (!DEV_AUTH_ALLOWED) return res.status(403).json({ error: 'not available' });
     const { direction, strength } = req.body as { direction?: NewsDirection; strength?: NewsStrength };
     if (direction && direction !== 'positive' && direction !== 'negative') {
       return res.status(400).json({ error: 'invalid direction' });

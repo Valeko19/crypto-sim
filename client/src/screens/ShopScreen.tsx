@@ -51,7 +51,7 @@ export function ShopScreen() {
     <div className="px-4 pt-4">
       <h1 className="text-2xl font-bold">Магазин</h1>
       <p className="mb-4 text-sm text-muted">
-        USDD за Звёзды Telegram · лимит {formatUsdd(1_000_000_000)} в день · остаток сегодня $
+        USDD за Звёзды Telegram · лимит {formatUsdd(status.dailyLimit)} в день · остаток сегодня $
         {formatCompact(status.remainingToday)}
       </p>
 
