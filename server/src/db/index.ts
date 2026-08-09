@@ -10,8 +10,8 @@ const dataDir = process.env.PGDATA_DIR ?? path.join(process.cwd(), '.pgdata');
 
 // Lower the WASM linear memory's initial reservation (default is large enough
 // that Render's free 512MB instance OOM'd on boot even with an empty DB and
-// zero traffic) — this project's actual data (11 coins, a handful of NPC
-// bots, one or two players) needs nowhere near PGlite's default headroom.
+// zero traffic) — this project's actual data (11 coins, a handful of players)
+// needs nowhere near PGlite's default headroom.
 export const db = new PGlite(dataDir, { initialMemory: 128 * 1024 * 1024 });
 
 export async function initDb() {
@@ -41,13 +41,6 @@ export async function initDb() {
       threshold DOUBLE PRECISION NOT NULL DEFAULT 0,
       claimed_at TIMESTAMPTZ,
       PRIMARY KEY (player_id, quest_type, coin_id, threshold)
-    );
-
-    CREATE TABLE IF NOT EXISTS npc_bots (
-      id TEXT PRIMARY KEY,
-      username TEXT NOT NULL,
-      simulated_net_worth DOUBLE PRECISION NOT NULL,
-      league TEXT NOT NULL
     );
 
     -- AMM pool reserves, snapshotted periodically so a server restart resumes
@@ -95,5 +88,11 @@ export async function initDb() {
       enabled BOOLEAN NOT NULL DEFAULT FALSE,
       next_run_at TIMESTAMPTZ
     );
+
+    -- One-time cleanup: the leaderboard no longer mixes in simulated NPC
+    -- bots, only real players — drops the now-unused table on whatever
+    -- already-deployed DB still has it (IF EXISTS makes this a safe no-op
+    -- once it's gone, so it's fine to leave running on every boot).
+    DROP TABLE IF EXISTS npc_bots;
   `);
 }

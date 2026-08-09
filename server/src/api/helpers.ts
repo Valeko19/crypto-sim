@@ -3,7 +3,7 @@ import { price } from '../engine/amm.js';
 import { COINS, COIN_MAP } from '../config/coins.js';
 import { rankForNetWorth, leagueIndex, RANKS } from '../config/ranks.js';
 import {
-  getHoldings, getAllHoldings, getPlayer, getAllPlayers, listNpcBots, PlayerRow, HoldingRow,
+  getHoldings, getAllHoldings, getPlayer, getAllPlayers, PlayerRow, HoldingRow,
   getStakingPositions, isPositionReserved, effectiveApr,
 } from '../db/queries.js';
 
@@ -110,18 +110,10 @@ export async function computeLeaderboard(
   leagueName: string,
   viewerPlayerId: string
 ): Promise<{ entries: LeaderboardEntry[]; minCapital: number; totalPlayers: number }> {
-  const bots = await listNpcBots();
-  const leagueBots = bots.filter(b => b.league === leagueName);
-
   const portfolios = await computeAllPortfolios(state);
-  const realEntries = [...portfolios.entries()]
+  const combined = [...portfolios.entries()]
     .filter(([, v]) => v.league === leagueName)
     .map(([id, v]) => ({ username: v.username, netWorth: v.netWorth, isPlayer: id === viewerPlayerId }));
-
-  const combined: { username: string; netWorth: number; isPlayer: boolean }[] = [
-    ...leagueBots.map(b => ({ username: b.username, netWorth: b.simulated_net_worth, isPlayer: false })),
-    ...realEntries,
-  ];
   combined.sort((a, b) => b.netWorth - a.netWorth);
 
   const entries: LeaderboardEntry[] = combined.map((c, i) => ({ place: i + 1, ...c }));

@@ -8,7 +8,6 @@ import { price } from './engine/amm.js';
 import { COINS } from './config/coins.js';
 import { initDb } from './db/index.js';
 import { getAllPoolSnapshots, savePoolSnapshot, getTotalHeldForCoin } from './db/queries.js';
-import { seedNpcBotsIfNeeded, driftNpcBots } from './npc/bots.js';
 import { createRouter } from './api/routes.js';
 import { createWsServer } from './ws/server.js';
 import { computeAllPortfolios } from './api/helpers.js';
@@ -21,7 +20,6 @@ const PORT = process.env.PORT ? Number(process.env.PORT) : 8787;
 
 async function main() {
   await initDb();
-  await seedNpcBotsIfNeeded();
 
   const state = createInitialState();
 
@@ -108,10 +106,6 @@ async function main() {
     }
     broadcast('candle_updates', { candles });
   });
-
-  setInterval(() => {
-    driftNpcBots().catch(() => {});
-  }, 60_000);
 
   setInterval(() => {
     persistPoolSnapshots().catch(() => {});

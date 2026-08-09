@@ -154,34 +154,6 @@ export async function claimQuestRow(
   );
 }
 
-export interface NpcBotRow {
-  id: string;
-  username: string;
-  simulated_net_worth: number;
-  league: string;
-}
-
-export async function listNpcBots(): Promise<NpcBotRow[]> {
-  const res = await db.query<NpcBotRow>('SELECT * FROM npc_bots');
-  return res.rows;
-}
-
-export async function countNpcBots(): Promise<number> {
-  const res = await db.query<{ count: string }>('SELECT COUNT(*)::int as count FROM npc_bots');
-  return Number(res.rows[0].count);
-}
-
-export async function insertNpcBot(bot: NpcBotRow): Promise<void> {
-  await db.query(
-    'INSERT INTO npc_bots (id, username, simulated_net_worth, league) VALUES ($1, $2, $3, $4)',
-    [bot.id, bot.username, bot.simulated_net_worth, bot.league]
-  );
-}
-
-export async function updateNpcBot(id: string, netWorth: number, league: string): Promise<void> {
-  await db.query('UPDATE npc_bots SET simulated_net_worth = $1, league = $2 WHERE id = $3', [netWorth, league, id]);
-}
-
 export interface PoolSnapshotRow {
   coin_id: string;
   coin_reserve: number;

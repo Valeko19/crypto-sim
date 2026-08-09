@@ -1,5 +1,5 @@
 // Staking rewards distribution — runs on a plain setInterval from index.ts,
-// same fire-and-forget convention as driftNpcBots/persistPoolSnapshots. Fixed
+// same fire-and-forget convention as persistPoolSnapshots. Fixed
 // APR (see config/staking.ts), same for every coin regardless of trading
 // volume/category. No interaction with the AMM/pricing engine at all — the
 // USD value used for accrual is fixed at stake time (position.stake_price),
