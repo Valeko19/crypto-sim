@@ -9,7 +9,7 @@ import { triggerNewsEvent } from '../engine/news.js';
 import { NewsDirection, NewsStrength } from '../config/news.js';
 import { MACRO_CONFIG, MACRO_ORDER, MacroPhase } from '../engine/macroCycle.js';
 import { COINS, COIN_MAP, tradeFeePct, sectionOf } from '../config/coins.js';
-import { RANKS } from '../config/ranks.js';
+import { RANKS, RANK_UP_REWARDS } from '../config/ranks.js';
 import { DAILY_BONUS_AMOUNT, EMISSION_THRESHOLDS } from '../config/quests.js';
 import { SHOP_PACKAGES, STARS_TO_USDD_RATE, DAILY_LIMIT_USDD } from '../config/shop.js';
 import { MIN_BOT_INTERVAL_MS } from '../config/tradingBot.js';
@@ -21,7 +21,7 @@ import {
   getQuestProgress, claimQuestRow, reservedStakedAmount,
   createStakingPosition, getPositionById, requestUnstakePosition, deleteStakingPosition,
   withdrawStakingPosition, claimFlexibleCoinRewards, isPositionReserved,
-  getTradingBot, configureTradingBot, setTradingBotEnabled,
+  getTradingBot, configureTradingBot, setTradingBotEnabled, getHighestLeagueIndex,
 } from '../db/queries.js';
 import { computePortfolio, computeLeaderboard, findEmissionLeader, computeStaking } from './helpers.js';
 import { STAKING_FLEXIBLE_COOLDOWN_MS, STAKING_FLEXIBLE_APR } from '../config/staking.js';
@@ -226,6 +226,12 @@ export function createRouter(state: EngineState) {
         })
       : [];
 
+    const highestLeagueIndex = await getHighestLeagueIndex(req.playerId);
+    const rankLadder = RANKS.slice(1).map((r, i) => {
+      const rankIndex = i + 1; // RANKS[0] (Планктон) is skipped — starting rank, no reward
+      return { name: r.name, reward: RANK_UP_REWARDS[rankIndex] ?? 0, achieved: highestLeagueIndex >= rankIndex };
+    });
+
     res.json({
       dailyBonus: { amount: DAILY_BONUS_AMOUNT, available: dailyAvailable, claimedAt: dailyRow?.claimed_at ?? null },
       emissionCapture: {
@@ -234,6 +240,7 @@ export function createRouter(state: EngineState) {
         leaderPct: leader?.pct ?? 0,
         ladder,
       },
+      rankRewards: { ladder: rankLadder },
     });
   });
 

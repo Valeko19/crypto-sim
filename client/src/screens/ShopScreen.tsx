@@ -2,10 +2,11 @@ import { useEffect, useState } from 'react';
 import { api, ShopStatus, TradingBotStatus } from '../lib/api';
 import { formatUsdd } from '../lib/format';
 
+const DAILY_CLAIM_USDD = 100_000;
+
 export function ShopScreen() {
   const [status, setStatus] = useState<ShopStatus | null>(null);
   const [botStatus, setBotStatus] = useState<TradingBotStatus | null>(null);
-  const [stars, setStars] = useState(450);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -15,15 +16,20 @@ export function ShopScreen() {
   }
   useEffect(load, []);
 
-  async function buy(starsAmount: number) {
+  async function claim() {
+    if (!status) return;
     setBusy(true);
     setMessage(null);
     try {
+      // Underlying API is still stars-priced (see config/shop.ts) — this
+      // just always requests exactly enough stars to hit the fixed daily
+      // claim amount at the server's current rate, rather than a slider.
+      const starsAmount = DAILY_CLAIM_USDD / status.rate;
       const res = await api.purchaseShop(starsAmount);
       setMessage(`Зачислено ${formatUsdd(res.usddCredited)}`);
       load();
     } catch (e: any) {
-      setMessage(e.message ?? 'Ошибка покупки');
+      setMessage(e.message ?? 'Ошибка получения');
     } finally {
       setBusy(false);
     }
@@ -31,34 +37,21 @@ export function ShopScreen() {
 
   if (!status) return <div className="p-4 text-muted">Загрузка…</div>;
 
-  const willGet = stars * status.rate;
+  const alreadyClaimed = status.remainingToday < DAILY_CLAIM_USDD;
 
   return (
     <div className="px-4 pt-4">
       <div className="rounded-2xl border border-border bg-card p-4">
-        <div className="mb-2 flex items-center justify-between text-sm">
-          <span className="text-muted">Своя сумма</span>
-          <span className="font-semibold">{stars}</span>
-        </div>
-        <input
-          type="range"
-          min={10}
-          max={10000}
-          step={10}
-          value={stars}
-          onChange={e => setStars(Number(e.target.value))}
-          className="w-full accent-accent-to"
-        />
-        <div className="mt-4 flex items-center justify-between">
-          <span className="text-sm text-muted">Получите</span>
-          <span className="text-2xl font-bold">{formatUsdd(willGet)}</span>
+        <div className="mb-4 flex items-center justify-between">
+          <span className="text-sm text-muted">Раз в день</span>
+          <span className="text-2xl font-bold">{formatUsdd(DAILY_CLAIM_USDD)}</span>
         </div>
         <button
-          disabled={busy}
-          onClick={() => buy(stars)}
-          className="mt-4 w-full rounded-xl bg-accent-gradient py-3 font-semibold shadow-glow disabled:opacity-40"
+          disabled={busy || alreadyClaimed}
+          onClick={claim}
+          className="w-full rounded-xl bg-accent-gradient py-3 font-semibold shadow-glow disabled:opacity-40"
         >
-          Забрать
+          {alreadyClaimed ? 'Заберите завтра' : 'Забрать'}
         </button>
       </div>
 

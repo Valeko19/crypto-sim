@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api, QuestsView } from '../lib/api';
 import { GiftIcon } from '../components/icons';
 import { formatUsdd } from '../lib/format';
+import { rankEmoji } from '../lib/rankVisuals';
 
 export function QuestsScreen() {
   const [quests, setQuests] = useState<QuestsView | null>(null);
@@ -26,7 +27,7 @@ export function QuestsScreen() {
 
   if (!quests) return <div className="p-4 text-muted">Загрузка…</div>;
 
-  const { dailyBonus, emissionCapture } = quests;
+  const { dailyBonus, emissionCapture, rankRewards } = quests;
 
   return (
     <div className="px-4 pt-4">
@@ -86,6 +87,34 @@ export function QuestsScreen() {
             </div>
           );
         })}
+      </div>
+
+      <h2 className="mb-1 mt-6 text-sm font-medium text-muted">Награды за ранги</h2>
+      <p className="mb-3 text-sm text-muted">Начисляется автоматически один раз при первом достижении ранга.</p>
+      <div className="space-y-2">
+        {rankRewards.ladder.map(step => (
+          <div
+            key={step.name}
+            className={`flex items-center gap-3 rounded-2xl border p-3 ${
+              step.achieved ? 'border-positive/30 bg-positive/5' : 'border-border bg-card'
+            }`}
+          >
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-card-light text-lg">
+              {rankEmoji(step.name)}
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="font-semibold">{step.name}</div>
+              <div className={`text-sm ${step.achieved ? 'text-positive' : 'text-muted'}`}>
+                {step.achieved ? `Начислено ${formatUsdd(step.reward)}` : `Награда ${formatUsdd(step.reward)}`}
+              </div>
+            </div>
+            {step.achieved && (
+              <span className="shrink-0 rounded-full bg-positive/10 px-3 py-1 text-xs font-semibold text-positive">
+                Взято
+              </span>
+            )}
+          </div>
+        ))}
       </div>
     </div>
   );

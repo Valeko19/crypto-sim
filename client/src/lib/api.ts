@@ -49,6 +49,9 @@ export interface QuestsView {
     leaderCoinId: string | null; leaderSymbol: string | null; leaderPct: number;
     ladder: { threshold: number; reward: number; met: boolean; claimed: boolean; coinId: string; coinSymbol: string }[];
   };
+  rankRewards: {
+    ladder: { name: string; reward: number; achieved: boolean }[];
+  };
 }
 
 export interface ShopStatus {

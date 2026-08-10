@@ -341,6 +341,12 @@ export async function getTradingBot(playerId: string): Promise<TradingBotRow | n
   return res.rows[0] ?? null;
 }
 
+// Deliberately never touches `enabled` — saving a config is a pure settings
+// update, not a start/stop action, so the Включить/Отключить toggle stays
+// the ONE place that changes whether the bot is actually running. A brand
+// new row falls back to the column's own DEFAULT FALSE (configure, then
+// explicitly enable); editing an existing (possibly paused) bot's settings
+// can never silently resume it.
 export async function configureTradingBot(
   playerId: string,
   coinId: string,
@@ -350,10 +356,10 @@ export async function configureTradingBot(
 ): Promise<void> {
   const nextRunAt = new Date(Date.now() + intervalMs).toISOString();
   await db.query(
-    `INSERT INTO trading_bots (player_id, purchased, coin_id, side, interval_ms, amount, enabled, next_run_at)
-     VALUES ($1, TRUE, $2, $3, $4, $5, TRUE, $6)
+    `INSERT INTO trading_bots (player_id, purchased, coin_id, side, interval_ms, amount, next_run_at)
+     VALUES ($1, TRUE, $2, $3, $4, $5, $6)
      ON CONFLICT (player_id) DO UPDATE SET
-       coin_id = $2, side = $3, interval_ms = $4, amount = $5, enabled = TRUE, next_run_at = $6`,
+       coin_id = $2, side = $3, interval_ms = $4, amount = $5, next_run_at = $6`,
     [playerId, coinId, side, intervalMs, amount, nextRunAt]
   );
 }
@@ -395,6 +401,14 @@ export async function getAllHighestLeagueIndexes(): Promise<Map<string, number>>
     'SELECT player_id, highest_league_index FROM player_rank_progress'
   );
   return new Map(res.rows.map(r => [r.player_id, r.highest_league_index]));
+}
+
+export async function getHighestLeagueIndex(playerId: string): Promise<number> {
+  const res = await db.query<{ highest_league_index: number }>(
+    'SELECT highest_league_index FROM player_rank_progress WHERE player_id = $1',
+    [playerId]
+  );
+  return res.rows[0]?.highest_league_index ?? 0;
 }
 
 export async function setHighestLeagueIndex(playerId: string, index: number): Promise<void> {
