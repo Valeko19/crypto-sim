@@ -71,7 +71,7 @@ export function MarketScreen() {
   return (
     <div className="px-4 pt-4">
       <div className="mb-4 flex items-start justify-between">
-        <h1 className="text-2xl font-bold">Рынок</h1>
+        <h1 className="text-2xl font-bold">Торговля</h1>
         {status && (
           <div className="flex flex-col items-end gap-1.5">
             <span className="rounded-full bg-accent-gradient px-3 py-1 text-xs font-semibold">

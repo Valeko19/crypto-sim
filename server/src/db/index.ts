@@ -89,6 +89,15 @@ export async function initDb() {
       next_run_at TIMESTAMPTZ
     );
 
+    -- Tracks the highest league/rank index a player has EVER reached, so the
+    -- one-time rank-up bonus (config/ranks.ts RANK_UP_REWARDS) can never be
+    -- farmed by oscillating net worth back and forth across a rank boundary —
+    -- only ever compared against this peak, never the player's live rank.
+    CREATE TABLE IF NOT EXISTS player_rank_progress (
+      player_id TEXT PRIMARY KEY REFERENCES players(id),
+      highest_league_index INTEGER NOT NULL DEFAULT 0
+    );
+
     -- One-time cleanup: the leaderboard no longer mixes in simulated NPC
     -- bots, only real players — drops the now-unused table on whatever
     -- already-deployed DB still has it (IF EXISTS makes this a safe no-op

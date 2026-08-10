@@ -341,16 +341,6 @@ export async function getTradingBot(playerId: string): Promise<TradingBotRow | n
   return res.rows[0] ?? null;
 }
 
-// Only ever sets `purchased` on conflict — a repeat/retry purchase must not
-// wipe an already-configured bot's coin_id/side/enabled back to defaults.
-export async function markBotPurchased(playerId: string): Promise<void> {
-  await db.query(
-    `INSERT INTO trading_bots (player_id, purchased) VALUES ($1, TRUE)
-     ON CONFLICT (player_id) DO UPDATE SET purchased = TRUE`,
-    [playerId]
-  );
-}
-
 export async function configureTradingBot(
   playerId: string,
   coinId: string,
@@ -394,6 +384,25 @@ export async function advanceBotNextRun(playerId: string, intervalMs: number): P
     playerId,
     new Date(Date.now() + intervalMs).toISOString(),
   ]);
+}
+
+// --- Rank-up rewards ---------------------------------------------------------
+// See player_rank_progress's table comment (db/index.ts) — this only ever
+// tracks the PEAK league index a player has reached, never the live one.
+
+export async function getAllHighestLeagueIndexes(): Promise<Map<string, number>> {
+  const res = await db.query<{ player_id: string; highest_league_index: number }>(
+    'SELECT player_id, highest_league_index FROM player_rank_progress'
+  );
+  return new Map(res.rows.map(r => [r.player_id, r.highest_league_index]));
+}
+
+export async function setHighestLeagueIndex(playerId: string, index: number): Promise<void> {
+  await db.query(
+    `INSERT INTO player_rank_progress (player_id, highest_league_index) VALUES ($1, $2)
+     ON CONFLICT (player_id) DO UPDATE SET highest_league_index = $2`,
+    [playerId, index]
+  );
 }
 
 // How much of this (player, coin) holding is currently reserved by open

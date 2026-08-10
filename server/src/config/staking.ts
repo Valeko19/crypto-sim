@@ -5,7 +5,7 @@
 // Fixed APR, same for every coin regardless of trading volume/category —
 // doubling as a flexible/locked reward multiplier (locked pays more for
 // giving up early access).
-export const STAKING_FLEXIBLE_APR = 0.20; // 20%/year
+export const STAKING_FLEXIBLE_APR = 0.50; // 50%/year
 export const STAKING_LOCKED_APR = 0.50; // 50%/year
 
 export const STAKING_LOCK_DURATION_MS = 5 * 24 * 60 * 60 * 1000; // 5 real days

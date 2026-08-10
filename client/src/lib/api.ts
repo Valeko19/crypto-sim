@@ -63,7 +63,7 @@ export interface TradingBotConfig {
 }
 
 export interface TradingBotStatus {
-  purchased: boolean; priceStars: number; config: TradingBotConfig | null;
+  config: TradingBotConfig | null;
 }
 
 export interface LeaderboardEntry { place: number; username: string; netWorth: number; isPlayer: boolean; }
@@ -133,10 +133,10 @@ export const api = {
     ),
   getStaking: () => req<{
     coins: StakingCoinView[];
-    config: { flexibleAprPct: number; lockedAprPct: number; lockDurationMs: number; flexibleCooldownMs: number };
+    config: { flexibleAprPct: number; flexibleCooldownMs: number };
   }>('/staking'),
-  stake: (coinId: string, amount: number, mode: StakingMode) => req<{ success: boolean; position: StakingPositionView }>(
-    '/staking/stake', { method: 'POST', body: JSON.stringify({ coinId, amount, mode }) }
+  stake: (coinId: string, amount: number) => req<{ success: boolean; position: StakingPositionView }>(
+    '/staking/stake', { method: 'POST', body: JSON.stringify({ coinId, amount }) }
   ),
   requestUnstake: (positionId: string) => req<{ success: boolean; unstakeAvailableAt: string }>(
     '/staking/request-unstake', { method: 'POST', body: JSON.stringify({ positionId }) }
@@ -151,7 +151,6 @@ export const api = {
     '/staking/claim', { method: 'POST', body: JSON.stringify({ coinId }) }
   ),
   getBotStatus: () => req<TradingBotStatus>('/bot'),
-  purchaseBot: () => req<{ success: boolean }>('/shop/purchase-bot', { method: 'POST' }),
   configureBot: (coinId: string, side: 'buy' | 'sell', intervalMs: number, amount: number) => req<{ success: boolean }>(
     '/bot/config', { method: 'POST', body: JSON.stringify({ coinId, side, intervalMs, amount }) }
   ),

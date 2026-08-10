@@ -5,6 +5,7 @@ import { api, CoinListItem, TradingBotStatus } from '../lib/api';
 import { useMarketSocket } from '../hooks/useMarketSocket';
 import { CoinAvatar } from '../components/CoinAvatar';
 import { NewsBanner } from '../components/NewsBanner';
+import { BotIcon } from '../components/icons';
 import { formatCompact, formatPrice, formatPct, formatUsdd, formatQty, parseAmountInput, formatAmountInput, pctColorClass, pricePrecision } from '../lib/format';
 
 // borderVisible must stay on: quiet coins can have a near-zero-height body for
@@ -111,7 +112,7 @@ export function CoinDetailScreen() {
   useEffect(() => {
     if (!chartRef.current) return;
     const chart = createChart(chartRef.current, {
-      layout: { background: { type: ColorType.Solid, color: 'transparent' }, textColor: '#8890AA' },
+      layout: { background: { type: ColorType.Solid, color: 'transparent' }, textColor: '#8890AA', attributionLogo: false },
       grid: { vertLines: { color: '#1B2036' }, horzLines: { color: '#1B2036' } },
       width: chartRef.current.clientWidth,
       height: 260,
@@ -399,15 +400,12 @@ export function CoinDetailScreen() {
         {message && <div className="mt-2 text-center text-xs text-muted">{message}</div>}
       </div>
 
-      {botStatus?.purchased && (
+      {botStatus && (
         <div className="mt-4 rounded-2xl border border-border bg-card p-4">
-          <div className="mb-3 text-sm font-semibold">Торговый бот</div>
-
-          {botStatus.config && botStatus.config.coinId !== coinId && (
-            <div className="mb-3 text-xs text-muted">
-              Бот сейчас настроен на другую монету — сохранение переключит его на {coin?.symbol ?? 'эту монету'}.
-            </div>
-          )}
+          <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
+            <BotIcon className="h-4 w-4" />
+            Торговый бот
+          </div>
 
           <div className="mb-3 flex gap-2">
             <button
@@ -424,7 +422,7 @@ export function CoinDetailScreen() {
             </button>
           </div>
 
-          <div className="mb-2 text-xs text-muted">Интервал, секунд (минимум 1)</div>
+          <div className="mb-2 text-xs text-muted">Интервал, секунд</div>
           <input
             type="text"
             inputMode="decimal"
@@ -457,11 +455,11 @@ export function CoinDetailScreen() {
             <button
               onClick={toggleBot}
               disabled={botBusy}
-              className={`mt-2 w-full rounded-xl border py-2 text-sm font-semibold transition-colors disabled:opacity-40 ${
-                botStatus.config.enabled ? 'border-positive/30 bg-positive/10 text-positive' : 'border-border text-muted'
+              className={`mt-2 w-full rounded-xl py-2 text-sm font-semibold text-white transition-colors disabled:opacity-40 ${
+                botStatus.config.enabled ? 'bg-negative' : 'bg-positive'
               }`}
             >
-              {botStatus.config.enabled ? 'Бот включён — выключить' : 'Бот выключен — включить'}
+              {botStatus.config.enabled ? 'Отключить' : 'Включить'}
             </button>
           )}
 

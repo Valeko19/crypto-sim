@@ -12,7 +12,7 @@ import { COINS, COIN_MAP, tradeFeePct, sectionOf } from '../config/coins.js';
 import { RANKS } from '../config/ranks.js';
 import { DAILY_BONUS_AMOUNT, EMISSION_THRESHOLDS } from '../config/quests.js';
 import { SHOP_PACKAGES, STARS_TO_USDD_RATE, DAILY_LIMIT_USDD } from '../config/shop.js';
-import { TRADING_BOT_PRICE_STARS, MIN_BOT_INTERVAL_MS } from '../config/tradingBot.js';
+import { MIN_BOT_INTERVAL_MS } from '../config/tradingBot.js';
 import { remainingToday, recordSpend } from './shopState.js';
 import { resolvePlayer } from './middleware.js';
 import { DEV_AUTH_ALLOWED } from '../auth/telegram.js';
@@ -21,13 +21,10 @@ import {
   getQuestProgress, claimQuestRow, reservedStakedAmount,
   createStakingPosition, getPositionById, requestUnstakePosition, deleteStakingPosition,
   withdrawStakingPosition, claimFlexibleCoinRewards, isPositionReserved,
-  getTradingBot, markBotPurchased, configureTradingBot, setTradingBotEnabled,
+  getTradingBot, configureTradingBot, setTradingBotEnabled,
 } from '../db/queries.js';
 import { computePortfolio, computeLeaderboard, findEmissionLeader, computeStaking } from './helpers.js';
-import {
-  StakingMode, STAKING_LOCK_DURATION_MS, STAKING_FLEXIBLE_COOLDOWN_MS,
-  STAKING_FLEXIBLE_APR, STAKING_LOCKED_APR,
-} from '../config/staking.js';
+import { STAKING_FLEXIBLE_COOLDOWN_MS, STAKING_FLEXIBLE_APR } from '../config/staking.js';
 
 export function createRouter(state: EngineState) {
   const router = Router();
@@ -117,19 +114,16 @@ export function createRouter(state: EngineState) {
       coins,
       config: {
         flexibleAprPct: STAKING_FLEXIBLE_APR * 100,
-        lockedAprPct: STAKING_LOCKED_APR * 100,
-        lockDurationMs: STAKING_LOCK_DURATION_MS,
         flexibleCooldownMs: STAKING_FLEXIBLE_COOLDOWN_MS,
       },
     });
   });
 
   router.post('/staking/stake', async (req, res) => {
-    const { coinId, amount, mode } = req.body as { coinId: string; amount: number; mode: StakingMode };
+    const { coinId, amount } = req.body as { coinId: string; amount: number };
     const cs = state.coins[coinId];
     const cfg = COIN_MAP[coinId];
     if (!cs || !cfg) return res.status(404).json({ error: 'coin not found' });
-    if (mode !== 'flexible' && mode !== 'locked') return res.status(400).json({ error: 'invalid mode' });
     const stakeAmount = Number(amount);
     if (!stakeAmount || stakeAmount <= 0) return res.status(400).json({ error: 'invalid amount' });
 
@@ -138,11 +132,11 @@ export function createRouter(state: EngineState) {
     const available = (holding?.amount ?? 0) - reserved;
     if (stakeAmount > available) return res.status(400).json({ error: 'insufficient sellable balance' });
 
-    const lockUntil = mode === 'locked' ? new Date(Date.now() + STAKING_LOCK_DURATION_MS) : null;
-    // USD value fixed at this moment (see engine/staking.ts) — reward accrual
-    // never re-reads the coin's price again for this position.
+    // Only the flexible mode is offered going forward (locked mode was
+    // removed) — USD value fixed at this moment (see engine/staking.ts),
+    // reward accrual never re-reads the coin's price again for this position.
     const stakePrice = price(cs.pool);
-    const position = await createStakingPosition(req.playerId, coinId, stakeAmount, mode, lockUntil, stakePrice);
+    const position = await createStakingPosition(req.playerId, coinId, stakeAmount, 'flexible', null, stakePrice);
     res.json({ success: true, position });
   });
 
@@ -319,11 +313,10 @@ export function createRouter(state: EngineState) {
     res.json({ success: true, usddCredited: usddAmount, remainingToday: remainingToday(req.playerId) });
   });
 
+  // The trading bot is available to every player with no purchase step.
   router.get('/bot', async (req, res) => {
     const bot = await getTradingBot(req.playerId);
     res.json({
-      purchased: bot?.purchased ?? false,
-      priceStars: TRADING_BOT_PRICE_STARS,
       config: bot && bot.coin_id ? {
         coinId: bot.coin_id,
         side: bot.side,
@@ -335,18 +328,7 @@ export function createRouter(state: EngineState) {
     });
   });
 
-  // STUB: same instant-unlock idiom as processStarPayment below — no real
-  // Telegram Stars charge yet.
-  router.post('/shop/purchase-bot', async (req, res) => {
-    const existing = await getTradingBot(req.playerId);
-    if (existing?.purchased) return res.status(400).json({ error: 'already purchased' });
-    await markBotPurchased(req.playerId);
-    res.json({ success: true });
-  });
-
   router.post('/bot/config', async (req, res) => {
-    const bot = await getTradingBot(req.playerId);
-    if (!bot?.purchased) return res.status(400).json({ error: 'trading bot not purchased' });
     const { coinId, side, intervalMs, amount } = req.body as {
       coinId: string; side: 'buy' | 'sell'; intervalMs: number; amount: number;
     };
@@ -363,12 +345,8 @@ export function createRouter(state: EngineState) {
   router.post('/bot/toggle', async (req, res) => {
     const bot = await getTradingBot(req.playerId);
     const { enabled } = req.body as { enabled: boolean };
-    if (enabled) {
-      if (!bot?.purchased || !bot.coin_id || !bot.side || !bot.interval_ms || !bot.amount) {
-        return res.status(400).json({ error: 'trading bot not configured' });
-      }
-    } else if (!bot?.purchased) {
-      return res.status(400).json({ error: 'trading bot not purchased' });
+    if (enabled && (!bot?.coin_id || !bot.side || !bot.interval_ms || !bot.amount)) {
+      return res.status(400).json({ error: 'trading bot not configured' });
     }
     await setTradingBotEnabled(req.playerId, Boolean(enabled));
     res.json({ success: true });

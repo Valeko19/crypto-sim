@@ -15,6 +15,7 @@ import { distributeStakingRewards } from './engine/staking.js';
 import { STAKING_DISTRIBUTION_INTERVAL_MS } from './config/staking.js';
 import { runTradingBots } from './engine/tradingBot.js';
 import { BOT_POLL_INTERVAL_MS } from './config/tradingBot.js';
+import { checkRankUpRewards } from './engine/rankRewards.js';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 8787;
 
@@ -94,6 +95,7 @@ async function main() {
           const view = portfolios.get(playerId);
           if (view) sendToPlayer(playerId, 'portfolio_updates', view);
         }
+        checkRankUpRewards(portfolios).catch(() => {});
       })
       .catch(() => {});
 

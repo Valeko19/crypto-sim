@@ -88,6 +88,17 @@ export function TrendingDownIcon(props: IconProps) {
   );
 }
 
+export function BotIcon(props: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" strokeWidth={1.8} stroke="currentColor" {...props}>
+      <rect x="5" y="9" width="14" height="10" rx="2" />
+      <path d="M12 9V6M12 6a1.4 1.4 0 1 0 0-2.8A1.4 1.4 0 0 0 12 6Z" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M9 13.2v1.6M15 13.2v1.6" strokeLinecap="round" />
+      <path d="M3 12h2M19 12h2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export function ShareIcon(props: IconProps) {
   return (
     <svg viewBox="0 0 24 24" fill="none" strokeWidth={1.8} stroke="currentColor" {...props}>

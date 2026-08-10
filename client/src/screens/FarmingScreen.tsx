@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
-import { api, StakingCoinView, StakingMode } from '../lib/api';
+import { api, StakingCoinView } from '../lib/api';
 import { CoinAvatar } from '../components/CoinAvatar';
 import { formatUsdd, formatQty, formatDurationLong, parseAmountInput, formatAmountInput } from '../lib/format';
 
-interface FormState { amount: string; mode: StakingMode; }
-interface StakingConfig { flexibleAprPct: number; lockedAprPct: number; lockDurationMs: number; flexibleCooldownMs: number; }
+interface FormState { amount: string; }
+interface StakingConfig { flexibleAprPct: number; flexibleCooldownMs: number; }
 
 export function FarmingScreen() {
   const [coins, setCoins] = useState<StakingCoinView[] | null>(null);
@@ -29,7 +29,7 @@ export function FarmingScreen() {
   }, []);
 
   function formFor(coinId: string): FormState {
-    return forms[coinId] ?? { amount: '', mode: 'flexible' };
+    return forms[coinId] ?? { amount: '' };
   }
   function updateForm(coinId: string, patch: Partial<FormState>) {
     setForms(prev => ({ ...prev, [coinId]: { ...formFor(coinId), ...patch } }));
@@ -53,7 +53,7 @@ export function FarmingScreen() {
     const amount = Number(form.amount);
     if (!amount || amount <= 0) return;
     withBusy(`stake:${coinId}`, async () => {
-      await api.stake(coinId, amount, form.mode);
+      await api.stake(coinId, amount);
       updateForm(coinId, { amount: '' });
     });
   }
@@ -155,20 +155,7 @@ export function FarmingScreen() {
               )}
 
               <div className="mt-3 border-t border-border pt-3">
-                <div className="mb-2 flex gap-2">
-                  <button
-                    onClick={() => updateForm(c.coinId, { mode: 'flexible' })}
-                    className={`flex-1 rounded-lg py-1.5 text-xs font-semibold transition-colors ${form.mode === 'flexible' ? 'bg-accent-to/20 text-accent-to' : 'text-muted'}`}
-                  >
-                    {config.flexibleAprPct}% (бессрочно)
-                  </button>
-                  <button
-                    onClick={() => updateForm(c.coinId, { mode: 'locked' })}
-                    className={`flex-1 rounded-lg py-1.5 text-xs font-semibold transition-colors ${form.mode === 'locked' ? 'bg-accent-to/20 text-accent-to' : 'text-muted'}`}
-                  >
-                    {config.lockedAprPct}% (Лок {Math.round(config.lockDurationMs / 86_400_000)} дней)
-                  </button>
-                </div>
+                <div className="mb-2 text-xs font-semibold text-accent-to">{config.flexibleAprPct}% годовых (бессрочно)</div>
                 <div className="flex gap-2">
                   <input
                     type="text"

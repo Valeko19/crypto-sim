@@ -1,6 +1,6 @@
 // STUB: real rate/limits will be governed by the Telegram Stars Invoice API later.
 export const STARS_TO_USDD_RATE = 10; // 1 star = $10
-export const DAILY_LIMIT_USDD = 1_000_000;
+export const DAILY_LIMIT_USDD = 10_000;
 
 export interface ShopPackage {
   id: string;

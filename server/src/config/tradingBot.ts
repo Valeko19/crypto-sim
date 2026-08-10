@@ -1,4 +1,3 @@
-export const TRADING_BOT_PRICE_STARS = 2000;
 export const MIN_BOT_INTERVAL_MS = 1_000;
 // Must poll strictly faster than MIN_BOT_INTERVAL_MS, not just equal to it —
 // polling at the exact same rate as a 1s-interval bot creates a beat/aliasing
