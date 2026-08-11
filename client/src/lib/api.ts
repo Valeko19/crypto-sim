@@ -47,7 +47,7 @@ export interface QuestsView {
   dailyBonus: { amount: number; available: boolean; claimedAt: string | null };
   emissionCapture: {
     leaderCoinId: string | null; leaderSymbol: string | null; leaderPct: number;
-    ladder: { threshold: number; reward: number; met: boolean; claimed: boolean; coinId: string; coinSymbol: string }[];
+    ladder: { threshold: number; reward: number; met: boolean; claimed: boolean; coinId: string | null; coinSymbol: string | null }[];
   };
   rankRewards: {
     ladder: { name: string; reward: number; achieved: boolean }[];

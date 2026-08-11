@@ -209,22 +209,25 @@ export function createRouter(state: EngineState) {
     const dailyClaimedAt = dailyRow?.claimed_at ? new Date(dailyRow.claimed_at) : null;
     const dailyAvailable = !dailyClaimedAt || Date.now() - dailyClaimedAt.getTime() >= 24 * 60 * 60 * 1000;
 
+    // Always returns all 5 thresholds, even with no holdings at all — a
+    // brand-new player should see the full ladder (all "not met") rather
+    // than nothing, since the amounts themselves are useful to see up front.
     const leader = findEmissionLeader(state, portfolio.holdings);
-    const ladder = leader
-      ? EMISSION_THRESHOLDS.map(t => {
-          const claimed = progress.some(
+    const ladder = EMISSION_THRESHOLDS.map(t => {
+      const claimed = leader
+        ? progress.some(
             p => p.quest_type === 'emission_capture' && p.coin_id === leader.coinId && p.threshold === t.threshold && p.claimed_at
-          );
-          return {
-            threshold: t.threshold,
-            reward: t.reward,
-            met: leader.pct >= t.threshold,
-            claimed,
-            coinId: leader.coinId,
-            coinSymbol: COIN_MAP[leader.coinId].symbol,
-          };
-        })
-      : [];
+          )
+        : false;
+      return {
+        threshold: t.threshold,
+        reward: t.reward,
+        met: leader ? leader.pct >= t.threshold : false,
+        claimed,
+        coinId: leader?.coinId ?? null,
+        coinSymbol: leader ? COIN_MAP[leader.coinId].symbol : null,
+      };
+    });
 
     const highestLeagueIndex = await getHighestLeagueIndex(req.playerId);
     const rankLadder = RANKS.slice(1).map((r, i) => {

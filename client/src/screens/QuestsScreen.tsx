@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, QuestsView } from '../lib/api';
-import { GiftIcon } from '../components/icons';
+import { GiftIcon, CheckIcon } from '../components/icons';
 import { formatUsdd } from '../lib/format';
 import { rankEmoji } from '../lib/rankVisuals';
 
@@ -60,12 +60,13 @@ export function QuestsScreen() {
 
       <div className="space-y-2">
         {emissionCapture.ladder.map(step => {
-          const questId = `emission_capture:${step.coinId}:${step.threshold}`;
+          const questId = step.coinId ? `emission_capture:${step.coinId}:${step.threshold}` : null;
+          const ready = step.met && !step.claimed;
           return (
             <div
               key={step.threshold}
               className={`flex items-center gap-3 rounded-2xl border p-3 ${
-                step.claimed ? 'border-positive/30 bg-positive/5' : 'border-border bg-card'
+                ready ? 'border-positive/30 bg-positive/5' : 'border-border bg-card'
               }`}
             >
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-card-light text-xs font-semibold">
@@ -73,17 +74,23 @@ export function QuestsScreen() {
               </div>
               <div className="min-w-0 flex-1">
                 <div className="font-semibold">Выкупить {step.threshold}% эмиссии монеты</div>
-                <div className={`text-sm ${step.claimed ? 'text-positive' : step.met ? 'text-positive' : 'text-muted'}`}>
-                  {step.claimed ? 'Взято' : step.met ? 'Готово' : 'Недостаточно'}
-                </div>
+                {!step.claimed && (
+                  <div className={`text-sm ${ready ? 'text-positive' : 'text-muted'}`}>
+                    {ready ? 'Готово' : 'Недостаточно'}
+                  </div>
+                )}
               </div>
-              <button
-                disabled={!step.met || step.claimed || busyId === questId}
-                onClick={() => claim(questId)}
-                className="shrink-0 rounded-full bg-positive px-4 py-2 text-sm font-semibold text-black disabled:bg-card-light disabled:text-muted"
-              >
-                {step.claimed ? 'Взято' : `Забрать ${formatUsdd(step.reward)}`}
-              </button>
+              {step.claimed ? (
+                <CheckIcon className="h-5 w-5 shrink-0 text-muted" />
+              ) : (
+                <button
+                  disabled={!ready || !questId || busyId === questId}
+                  onClick={() => questId && claim(questId)}
+                  className="shrink-0 rounded-full bg-positive px-4 py-2 text-sm font-semibold text-black disabled:bg-card-light disabled:text-muted"
+                >
+                  {formatUsdd(step.reward)}
+                </button>
+              )}
             </div>
           );
         })}
