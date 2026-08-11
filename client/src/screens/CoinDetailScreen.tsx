@@ -43,6 +43,10 @@ export function CoinDetailScreen() {
   const [botAmount, setBotAmount] = useState('');
   const [botBusy, setBotBusy] = useState(false);
   const [botMessage, setBotMessage] = useState<string | null>(null);
+  // Guards the auto-save effect below from firing on the initial prefill from
+  // the server (refreshBotStatus) or on a bare coin-switch — only a real
+  // field edit by the user should trigger a save.
+  const botEditedRef = useRef(false);
 
   const chartRef = useRef<HTMLDivElement | null>(null);
   const chartApiRef = useRef<IChartApi | null>(null);
@@ -74,25 +78,47 @@ export function CoinDetailScreen() {
         setBotIntervalSec(String(Math.round((bs.config.intervalMs / 1000) * 100) / 100));
         setBotAmount(String(bs.config.amount));
       }
+      // This is server state landing in the form, not a user edit — don't let
+      // it be mistaken for one by the auto-save effect below.
+      botEditedRef.current = false;
     });
   }
 
-  async function saveBotConfig() {
+  // A coin switch alone must never trigger a save: at the moment of switching,
+  // botSide/botIntervalSec/botAmount still hold the PREVIOUS coin's values (state
+  // hasn't been reset), so autosaving here would write stale values onto the new
+  // coin. Clearing the flag synchronously (before the debounce effect below can
+  // run on this same render) closes that race; refreshBotStatus repopulates the
+  // form for the new coin right after.
+  useEffect(() => {
+    botEditedRef.current = false;
+  }, [coinId]);
+
+  // Editing a field on this coin's page IS the act of targeting the bot at this
+  // coin — there is no separate "Сохранить" step. Debounced so rapid typing
+  // doesn't fire a request per keystroke. coinId is intentionally NOT a
+  // dependency: it's only read via closure when a real field edit fires this
+  // effect, so a bare coin switch (with no field edit) never triggers a save.
+  useEffect(() => {
+    if (!botEditedRef.current) return;
     const intervalMs = Math.round(Number(botIntervalSec) * 1000);
     const amt = Number(botAmount);
     if (!intervalMs || !amt) return;
-    setBotBusy(true);
-    setBotMessage(null);
-    try {
-      await api.configureBot(coinId, botSide, intervalMs, amt);
-      setBotMessage('Бот настроен');
-      refreshBotStatus();
-    } catch (e: any) {
-      setBotMessage(e.message ?? 'Ошибка настройки');
-    } finally {
-      setBotBusy(false);
-    }
-  }
+    const timer = setTimeout(async () => {
+      setBotBusy(true);
+      setBotMessage(null);
+      try {
+        await api.configureBot(coinId, botSide, intervalMs, amt);
+        setBotMessage('Настройки сохранены');
+        refreshBotStatus();
+      } catch (e: any) {
+        setBotMessage(e.message ?? 'Ошибка настройки');
+      } finally {
+        setBotBusy(false);
+      }
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [botSide, botIntervalSec, botAmount]);
 
   async function toggleBot() {
     if (!botStatus?.config) return;
@@ -409,13 +435,13 @@ export function CoinDetailScreen() {
 
           <div className="mb-3 flex gap-2">
             <button
-              onClick={() => setBotSide('buy')}
+              onClick={() => { botEditedRef.current = true; setBotSide('buy'); }}
               className={`flex-1 rounded-xl py-2 text-sm font-semibold transition-colors ${botSide === 'buy' ? 'bg-positive/20 text-positive' : 'text-muted'}`}
             >
               Покупать
             </button>
             <button
-              onClick={() => setBotSide('sell')}
+              onClick={() => { botEditedRef.current = true; setBotSide('sell'); }}
               className={`flex-1 rounded-xl py-2 text-sm font-semibold transition-colors ${botSide === 'sell' ? 'bg-negative/20 text-negative' : 'text-muted'}`}
             >
               Продавать
@@ -427,7 +453,7 @@ export function CoinDetailScreen() {
             type="text"
             inputMode="decimal"
             value={botIntervalSec}
-            onChange={e => setBotIntervalSec(e.target.value.replace(/[^\d.]/g, ''))}
+            onChange={e => { botEditedRef.current = true; setBotIntervalSec(e.target.value.replace(/[^\d.]/g, '')); }}
             className="w-full rounded-xl border border-border bg-bg px-3 py-2.5 text-lg outline-none focus:border-accent-to"
           />
 
@@ -438,24 +464,16 @@ export function CoinDetailScreen() {
             type="text"
             inputMode="decimal"
             value={formatAmountInput(botAmount)}
-            onChange={e => setBotAmount(parseAmountInput(e.target.value))}
+            onChange={e => { botEditedRef.current = true; setBotAmount(parseAmountInput(e.target.value)); }}
             placeholder="0.00"
             className="w-full rounded-xl border border-border bg-bg px-3 py-2.5 text-lg outline-none focus:border-accent-to"
           />
-
-          <button
-            onClick={saveBotConfig}
-            disabled={botBusy || !botIntervalSec || !botAmount}
-            className="mt-4 w-full rounded-xl bg-accent-gradient py-3 font-semibold shadow-glow disabled:opacity-40"
-          >
-            Сохранить
-          </button>
 
           {botStatus.config?.coinId === coinId && (
             <button
               onClick={toggleBot}
               disabled={botBusy}
-              className={`mt-2 w-full rounded-xl py-2 text-sm font-semibold text-white transition-colors disabled:opacity-40 ${
+              className={`mt-4 w-full rounded-xl py-2 text-sm font-semibold text-white transition-colors disabled:opacity-40 ${
                 botStatus.config.enabled ? 'bg-negative' : 'bg-positive'
               }`}
             >

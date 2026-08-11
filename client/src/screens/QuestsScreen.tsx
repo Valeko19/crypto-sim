@@ -115,11 +115,7 @@ export function QuestsScreen() {
                 {step.achieved ? `Начислено ${formatUsdd(step.reward)}` : `Награда ${formatUsdd(step.reward)}`}
               </div>
             </div>
-            {step.achieved && (
-              <span className="shrink-0 rounded-full bg-positive/10 px-3 py-1 text-xs font-semibold text-positive">
-                Взято
-              </span>
-            )}
+            {step.achieved && <CheckIcon className="h-5 w-5 shrink-0 text-positive" />}
           </div>
         ))}
       </div>
