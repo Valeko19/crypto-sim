@@ -10,7 +10,8 @@ import { NewsDirection, NewsStrength } from '../config/news.js';
 import { MACRO_CONFIG, MACRO_ORDER, MacroPhase } from '../engine/macroCycle.js';
 import { COINS, COIN_MAP, tradeFeePct, sectionOf } from '../config/coins.js';
 import { RANKS, RANK_UP_REWARDS } from '../config/ranks.js';
-import { DAILY_BONUS_AMOUNT, EMISSION_THRESHOLDS } from '../config/quests.js';
+import { DAILY_BONUS_AMOUNT, EMISSION_THRESHOLDS, DAILY_VOLUME_THRESHOLD, DAILY_VOLUME_REWARD } from '../config/quests.js';
+import { todaysVolume } from '../engine/dailyVolume.js';
 import { SHOP_PACKAGES, STARS_TO_USDD_RATE, DAILY_LIMIT_USDD } from '../config/shop.js';
 import { MIN_BOT_INTERVAL_MS } from '../config/tradingBot.js';
 import { remainingToday, recordSpend } from './shopState.js';
@@ -209,16 +210,22 @@ export function createRouter(state: EngineState) {
     const dailyClaimedAt = dailyRow?.claimed_at ? new Date(dailyRow.claimed_at) : null;
     const dailyAvailable = !dailyClaimedAt || Date.now() - dailyClaimedAt.getTime() >= 24 * 60 * 60 * 1000;
 
+    const volumeRow = progress.find(p => p.quest_type === 'daily_volume');
+    const volumeClaimedAt = volumeRow?.claimed_at ? new Date(volumeRow.claimed_at) : null;
+    const volumeRecentlyClaimed = !!volumeClaimedAt && Date.now() - volumeClaimedAt.getTime() < 24 * 60 * 60 * 1000;
+    const volumeToday = todaysVolume(req.playerId);
+
     // Always returns all 5 thresholds, even with no holdings at all — a
     // brand-new player should see the full ladder (all "not met") rather
     // than nothing, since the amounts themselves are useful to see up front.
+    // Claimed is tracked per (player, threshold) only — NOT per coin — so a
+    // threshold reached on one coin and then again on a different coin can
+    // only ever be paid out once (see the matching check in POST /quests/claim).
     const leader = findEmissionLeader(state, portfolio.holdings);
     const ladder = EMISSION_THRESHOLDS.map(t => {
-      const claimed = leader
-        ? progress.some(
-            p => p.quest_type === 'emission_capture' && p.coin_id === leader.coinId && p.threshold === t.threshold && p.claimed_at
-          )
-        : false;
+      const claimed = progress.some(
+        p => p.quest_type === 'emission_capture' && p.threshold === t.threshold && p.claimed_at
+      );
       return {
         threshold: t.threshold,
         reward: t.reward,
@@ -237,6 +244,14 @@ export function createRouter(state: EngineState) {
 
     res.json({
       dailyBonus: { amount: DAILY_BONUS_AMOUNT, available: dailyAvailable, claimedAt: dailyRow?.claimed_at ?? null },
+      dailyVolume: {
+        amount: DAILY_VOLUME_REWARD,
+        threshold: DAILY_VOLUME_THRESHOLD,
+        current: volumeToday,
+        met: volumeToday >= DAILY_VOLUME_THRESHOLD,
+        claimed: volumeRecentlyClaimed,
+        claimedAt: volumeRow?.claimed_at ?? null,
+      },
       emissionCapture: {
         leaderCoinId: leader?.coinId ?? null,
         leaderSymbol: leader ? COIN_MAP[leader.coinId].symbol : null,
@@ -263,6 +278,22 @@ export function createRouter(state: EngineState) {
       return res.json({ success: true, amount: DAILY_BONUS_AMOUNT });
     }
 
+    if (questId === 'daily_volume') {
+      const progress = await getQuestProgress(req.playerId);
+      const volumeRow = progress.find(p => p.quest_type === 'daily_volume');
+      const lastClaim = volumeRow?.claimed_at ? new Date(volumeRow.claimed_at).getTime() : 0;
+      if (Date.now() - lastClaim < 24 * 60 * 60 * 1000) {
+        return res.status(400).json({ error: 'already claimed' });
+      }
+      if (todaysVolume(req.playerId) < DAILY_VOLUME_THRESHOLD) {
+        return res.status(400).json({ error: 'insufficient volume' });
+      }
+      await claimQuestRow(req.playerId, 'daily_volume', 'none', 0);
+      const { db } = await import('../db/index.js');
+      await db.query('UPDATE players SET usdd_balance = usdd_balance + $1 WHERE id = $2', [DAILY_VOLUME_REWARD, req.playerId]);
+      return res.json({ success: true, amount: DAILY_VOLUME_REWARD });
+    }
+
     if (questId.startsWith('emission_capture:')) {
       const [, coinId, thresholdStr] = questId.split(':');
       const threshold = Number(thresholdStr);
@@ -274,9 +305,11 @@ export function createRouter(state: EngineState) {
       if (!holding || holding.pctEmission < threshold) {
         return res.status(400).json({ error: 'insufficient emission share' });
       }
+      // Claimed is tracked per (player, threshold) only — a threshold already
+      // paid out on a different coin must not be payable again here.
       const progress = await getQuestProgress(req.playerId);
       const already = progress.some(
-        p => p.quest_type === 'emission_capture' && p.coin_id === coinId && p.threshold === threshold && p.claimed_at
+        p => p.quest_type === 'emission_capture' && p.threshold === threshold && p.claimed_at
       );
       if (already) return res.status(400).json({ error: 'already claimed' });
 

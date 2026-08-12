@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, QuestsView } from '../lib/api';
-import { GiftIcon, CheckIcon } from '../components/icons';
+import { GiftIcon, CheckIcon, TradeIcon } from '../components/icons';
 import { formatUsdd } from '../lib/format';
 import { rankEmoji } from '../lib/rankVisuals';
 
@@ -27,13 +27,14 @@ export function QuestsScreen() {
 
   if (!quests) return <div className="p-4 text-muted">Загрузка…</div>;
 
-  const { dailyBonus, emissionCapture, rankRewards } = quests;
+  const { dailyBonus, dailyVolume, emissionCapture, rankRewards } = quests;
+  const dailyVolumeReady = dailyVolume.met && !dailyVolume.claimed;
 
   return (
     <div className="px-4 pt-4">
       <h2 className="mb-2 text-sm font-medium text-muted">Ежедневные</h2>
       <div
-        className={`mb-6 flex items-center gap-3 rounded-2xl border p-4 ${
+        className={`mb-2 flex items-center gap-3 rounded-2xl border p-4 ${
           !dailyBonus.available ? 'border-positive/30 bg-positive/5' : 'border-border bg-card'
         }`}
       >
@@ -44,13 +45,48 @@ export function QuestsScreen() {
           <div className="font-semibold">Ежедневный бонус</div>
           {!dailyBonus.available && <div className="text-sm text-positive">Выполнено</div>}
         </div>
-        <button
-          disabled={!dailyBonus.available || busyId === 'daily_bonus'}
-          onClick={() => claim('daily_bonus')}
-          className="shrink-0 rounded-full bg-positive px-4 py-2 text-sm font-semibold text-black disabled:bg-card-light disabled:text-muted"
-        >
-          {!dailyBonus.available ? 'Выполнено' : `Забрать ${formatUsdd(dailyBonus.amount)}`}
-        </button>
+        {!dailyBonus.available ? (
+          <CheckIcon className="h-5 w-5 shrink-0 text-positive" />
+        ) : (
+          <button
+            disabled={busyId === 'daily_bonus'}
+            onClick={() => claim('daily_bonus')}
+            className="shrink-0 rounded-full bg-positive px-4 py-2 text-sm font-semibold text-black disabled:bg-card-light disabled:text-muted"
+          >
+            {`Забрать ${formatUsdd(dailyBonus.amount)}`}
+          </button>
+        )}
+      </div>
+
+      <div
+        className={`mb-6 flex items-center gap-3 rounded-2xl border p-4 ${
+          dailyVolume.claimed ? 'border-positive/30 bg-positive/5' : 'border-border bg-card'
+        }`}
+      >
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-accent-gradient">
+          <TradeIcon className="h-5 w-5 text-white" />
+        </div>
+        <div className="flex-1">
+          <div className="font-semibold">Оборот {formatUsdd(dailyVolume.threshold)} за сутки</div>
+          <div className={`text-sm ${dailyVolume.claimed ? 'text-positive' : dailyVolumeReady ? 'text-positive' : 'text-muted'}`}>
+            {dailyVolume.claimed
+              ? 'Выполнено'
+              : dailyVolumeReady
+              ? 'Готово'
+              : `Оборот ${formatUsdd(dailyVolume.current)} из ${formatUsdd(dailyVolume.threshold)}`}
+          </div>
+        </div>
+        {dailyVolume.claimed ? (
+          <CheckIcon className="h-5 w-5 shrink-0 text-positive" />
+        ) : (
+          <button
+            disabled={!dailyVolumeReady || busyId === 'daily_volume'}
+            onClick={() => claim('daily_volume')}
+            className="shrink-0 rounded-full bg-positive px-4 py-2 text-sm font-semibold text-black disabled:bg-card-light disabled:text-muted"
+          >
+            {formatUsdd(dailyVolume.amount)}
+          </button>
+        )}
       </div>
 
       <h2 className="mb-1 text-sm font-medium text-muted">Захват эмиссии</h2>
@@ -66,22 +102,24 @@ export function QuestsScreen() {
             <div
               key={step.threshold}
               className={`flex items-center gap-3 rounded-2xl border p-3 ${
-                ready ? 'border-positive/30 bg-positive/5' : 'border-border bg-card'
+                ready || step.claimed ? 'border-positive/30 bg-positive/5' : 'border-border bg-card'
               }`}
             >
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-card-light text-xs font-semibold">
+              <div
+                className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-card-light text-xs font-semibold ${
+                  step.claimed ? 'ring-2 ring-positive' : ''
+                }`}
+              >
                 {step.threshold}%
               </div>
               <div className="min-w-0 flex-1">
                 <div className="font-semibold">Выкупить {step.threshold}% эмиссии монеты</div>
-                {!step.claimed && (
-                  <div className={`text-sm ${ready ? 'text-positive' : 'text-muted'}`}>
-                    {ready ? 'Готово' : 'Недостаточно'}
-                  </div>
-                )}
+                <div className={`text-sm ${ready || step.claimed ? 'text-positive' : 'text-muted'}`}>
+                  {step.claimed ? 'Выполнено' : ready ? 'Готово' : 'Недостаточно'}
+                </div>
               </div>
               {step.claimed ? (
-                <CheckIcon className="h-5 w-5 shrink-0 text-muted" />
+                <CheckIcon className="h-5 w-5 shrink-0 text-positive" />
               ) : (
                 <button
                   disabled={!ready || !questId || busyId === questId}
@@ -97,7 +135,7 @@ export function QuestsScreen() {
       </div>
 
       <h2 className="mb-1 mt-6 text-sm font-medium text-muted">Награды за ранги</h2>
-      <p className="mb-3 text-sm text-muted">Начисляется автоматически один раз при первом достижении ранга.</p>
+      <p className="mb-3 text-sm text-muted">Награда за ранг</p>
       <div className="space-y-2">
         {rankRewards.ladder.map(step => (
           <div
@@ -112,7 +150,7 @@ export function QuestsScreen() {
             <div className="min-w-0 flex-1">
               <div className="font-semibold">{step.name}</div>
               <div className={`text-sm ${step.achieved ? 'text-positive' : 'text-muted'}`}>
-                {step.achieved ? `Начислено ${formatUsdd(step.reward)}` : `Награда ${formatUsdd(step.reward)}`}
+                {step.achieved ? 'Выполнено' : `Награда ${formatUsdd(step.reward)}`}
               </div>
             </div>
             {step.achieved && <CheckIcon className="h-5 w-5 shrink-0 text-positive" />}

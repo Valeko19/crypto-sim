@@ -2,6 +2,7 @@ import { EngineState } from './state.js';
 import { buyWithUsdd, sellCoin, price } from './amm.js';
 import { COIN_MAP, tradeFeePct, MIN_TRADE_USDD } from '../config/coins.js';
 import { ensurePlayerExists, getPlayer, applyBuy, applySell, getHolding, reservedStakedAmount } from '../db/queries.js';
+import { recordTradeVolume } from './dailyVolume.js';
 
 export class TradeError extends Error {
   status: number;
@@ -47,6 +48,7 @@ async function executeTradeUnlocked(state: EngineState, playerId: string, params
     const result = buyWithUsdd(cs.pool, netIn);
     await applyBuy(playerId, coinId, result.coinAmount, usddIn, result.avgPrice);
     cs.playerOwnedCoins += result.coinAmount;
+    recordTradeVolume(playerId, usddIn);
     return { ...result, fee };
   } else if (side === 'sell') {
     const holding = await getHolding(playerId, coinId);
@@ -64,6 +66,7 @@ async function executeTradeUnlocked(state: EngineState, playerId: string, params
     const netOut = result.usddAmount - fee;
     await applySell(playerId, coinId, coinIn, netOut, result.avgPrice);
     cs.playerOwnedCoins = Math.max(0, cs.playerOwnedCoins - coinIn);
+    recordTradeVolume(playerId, netOut);
     return { ...result, usddAmount: netOut, fee };
   }
   throw new TradeError('side must be buy or sell');
