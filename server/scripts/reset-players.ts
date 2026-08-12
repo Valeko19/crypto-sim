@@ -5,6 +5,13 @@
 // script) whenever the beta needs to restart every existing player from a
 // clean slate.
 //
+// There is also a Shell-free alternative that runs the identical reset from
+// a normal redeploy instead — see admin/playerReset.ts's maybeRunPlayerResetOnBoot,
+// triggered by setting RUN_PLAYER_RESET=CONFIRM in Render's env vars. Both
+// paths share the same resetAllPlayers() logic and mark the same
+// admin_reset_log row, so running one makes the other a no-op if it's ever
+// also triggered afterward.
+//
 // Resets, for every player row already in the database:
 //   - usdd_balance -> 100 (the same starting bonus ensurePlayer grants new players)
 //   - trades_count / total_volume / realized_pnl -> 0 (lifetime stats reset
@@ -23,7 +30,8 @@
 // config isn't "portfolio progress" — the user asked to leave it as-is).
 //
 // Safety: requires an explicit --yes flag so it can never run by accident.
-import { db, initDb } from '../src/db/index.js';
+import { initDb } from '../src/db/index.js';
+import { resetAllPlayers, markResetDone } from '../src/admin/playerReset.js';
 
 async function main() {
   if (!process.argv.includes('--yes')) {
@@ -37,19 +45,12 @@ async function main() {
 
   await initDb();
 
-  const players = await db.query('SELECT id FROM players');
-  console.log(`Resetting ${players.rows.length} player(s)...`);
-
-  await db.query('DELETE FROM player_holdings');
-  await db.query('DELETE FROM quest_progress');
-  await db.query('DELETE FROM player_rank_progress');
-  await db.query('DELETE FROM staking_positions');
-  await db.query(
-    'UPDATE players SET usdd_balance = 100, trades_count = 0, total_volume = 0, realized_pnl = 0'
-  );
+  console.log('Resetting all players...');
+  const count = await resetAllPlayers();
+  await markResetDone();
 
   console.log(
-    'Done. All players reset to a fresh $100 balance with no holdings, quest progress, ' +
+    `Done. ${count} player(s) reset to a fresh $100 balance with no holdings, quest progress, ` +
       'rank progress, or staking positions. Trading bot configs were left untouched.'
   );
   process.exit(0);

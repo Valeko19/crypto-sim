@@ -16,11 +16,13 @@ import { STAKING_DISTRIBUTION_INTERVAL_MS } from './config/staking.js';
 import { runTradingBots } from './engine/tradingBot.js';
 import { BOT_POLL_INTERVAL_MS } from './config/tradingBot.js';
 import { checkRankUpRewards } from './engine/rankRewards.js';
+import { maybeRunPlayerResetOnBoot } from './admin/playerReset.js';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 8787;
 
 async function main() {
   await initDb();
+  await maybeRunPlayerResetOnBoot();
 
   const state = createInitialState();
 

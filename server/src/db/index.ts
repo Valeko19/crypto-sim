@@ -103,5 +103,13 @@ export async function initDb() {
     -- already-deployed DB still has it (IF EXISTS makes this a safe no-op
     -- once it's gone, so it's fine to leave running on every boot).
     DROP TABLE IF EXISTS npc_bots;
+
+    -- Marks one-off admin operations (see src/admin/playerReset.ts) that must
+    -- run at most once even if their triggering env var is left set across
+    -- multiple restarts. id is the operation's name, e.g. 'player_reset'.
+    CREATE TABLE IF NOT EXISTS admin_reset_log (
+      id TEXT PRIMARY KEY,
+      ran_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
   `);
 }
