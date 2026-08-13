@@ -27,13 +27,12 @@ export function QuestsScreen() {
 
   if (!quests) return <div className="p-4 text-muted">Загрузка…</div>;
 
-  const { dailyBonus, dailyVolume, dailyEarnedTotal, emissionCapture, emissionEarnedTotal, rankRewards, rankEarnedTotal } = quests;
+  const { dailyBonus, dailyVolume, emissionCapture, rankRewards } = quests;
   const dailyVolumeReady = dailyVolume.met && !dailyVolume.claimed;
 
   return (
     <div className="px-4 pt-4">
-      <h2 className="mb-1 text-sm font-medium text-muted">Ежедневные</h2>
-      <p className="mb-2 text-xs text-muted">Всего получено: {formatUsdd(dailyEarnedTotal)}</p>
+      <h2 className="mb-2 text-sm font-medium text-muted">Ежедневные</h2>
       <div
         className={`mb-2 flex items-center gap-3 rounded-2xl border p-4 ${
           !dailyBonus.available ? 'border-positive/30 bg-positive/5' : 'border-border bg-card'
@@ -47,7 +46,10 @@ export function QuestsScreen() {
           {!dailyBonus.available && <div className="text-sm text-positive">Выполнено</div>}
         </div>
         {!dailyBonus.available ? (
-          <CheckIcon className="h-5 w-5 shrink-0 text-positive" />
+          <div className="flex shrink-0 items-center gap-1.5">
+            <span className="text-sm font-semibold text-positive">{formatUsdd(dailyBonus.amount)}</span>
+            <CheckIcon className="h-5 w-5 text-positive" />
+          </div>
         ) : (
           <button
             disabled={busyId === 'daily_bonus'}
@@ -78,7 +80,10 @@ export function QuestsScreen() {
           </div>
         </div>
         {dailyVolume.claimed ? (
-          <CheckIcon className="h-5 w-5 shrink-0 text-positive" />
+          <div className="flex shrink-0 items-center gap-1.5">
+            <span className="text-sm font-semibold text-positive">{formatUsdd(dailyVolume.amount)}</span>
+            <CheckIcon className="h-5 w-5 text-positive" />
+          </div>
         ) : (
           <button
             disabled={!dailyVolumeReady || busyId === 'daily_volume'}
@@ -91,7 +96,6 @@ export function QuestsScreen() {
       </div>
 
       <h2 className="mb-1 text-sm font-medium text-muted">Захват эмиссии</h2>
-      <p className="mb-2 text-xs text-muted">Всего получено: {formatUsdd(emissionEarnedTotal)}</p>
       {!emissionCapture.leaderCoinId && (
         <p className="mb-3 text-sm text-muted">У вас пока нет позиций — купите монету, чтобы начать захват эмиссии.</p>
       )}
@@ -121,7 +125,10 @@ export function QuestsScreen() {
                 </div>
               </div>
               {step.claimed ? (
-                <CheckIcon className="h-5 w-5 shrink-0 text-positive" />
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <span className="text-sm font-semibold text-positive">{formatUsdd(step.reward)}</span>
+                  <CheckIcon className="h-5 w-5 text-positive" />
+                </div>
               ) : (
                 <button
                   disabled={!ready || !questId || busyId === questId}
@@ -136,9 +143,7 @@ export function QuestsScreen() {
         })}
       </div>
 
-      <h2 className="mb-1 mt-6 text-sm font-medium text-muted">Награды за ранги</h2>
-      <p className="mb-1 text-sm text-muted">Награда за ранг</p>
-      <p className="mb-2 text-xs text-muted">Всего получено: {formatUsdd(rankEarnedTotal)}</p>
+      <h2 className="mb-2 mt-6 text-sm font-medium text-muted">Награда за ранг</h2>
       <div className="space-y-2">
         {rankRewards.ladder.map(step => {
           const questId = `rank_reward:${step.rankIndex}`;
@@ -164,7 +169,10 @@ export function QuestsScreen() {
                 </div>
               </div>
               {step.claimed ? (
-                <CheckIcon className="h-5 w-5 shrink-0 text-positive" />
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <span className="text-sm font-semibold text-positive">{formatUsdd(step.reward)}</span>
+                  <CheckIcon className="h-5 w-5 text-positive" />
+                </div>
               ) : (
                 <button
                   disabled={!ready || busyId === questId}
