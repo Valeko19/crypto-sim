@@ -46,13 +46,16 @@ export interface PortfolioView {
 export interface QuestsView {
   dailyBonus: { amount: number; available: boolean; claimedAt: string | null };
   dailyVolume: { amount: number; threshold: number; current: number; met: boolean; claimed: boolean; claimedAt: string | null };
+  dailyEarnedTotal: number;
   emissionCapture: {
     leaderCoinId: string | null; leaderSymbol: string | null; leaderPct: number;
     ladder: { threshold: number; reward: number; met: boolean; claimed: boolean; coinId: string | null; coinSymbol: string | null }[];
   };
+  emissionEarnedTotal: number;
   rankRewards: {
-    ladder: { name: string; reward: number; achieved: boolean }[];
+    ladder: { name: string; reward: number; rankIndex: number; achieved: boolean; claimed: boolean }[];
   };
+  rankEarnedTotal: number;
 }
 
 export interface ShopStatus {

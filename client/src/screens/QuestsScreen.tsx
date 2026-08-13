@@ -27,12 +27,13 @@ export function QuestsScreen() {
 
   if (!quests) return <div className="p-4 text-muted">Загрузка…</div>;
 
-  const { dailyBonus, dailyVolume, emissionCapture, rankRewards } = quests;
+  const { dailyBonus, dailyVolume, dailyEarnedTotal, emissionCapture, emissionEarnedTotal, rankRewards, rankEarnedTotal } = quests;
   const dailyVolumeReady = dailyVolume.met && !dailyVolume.claimed;
 
   return (
     <div className="px-4 pt-4">
-      <h2 className="mb-2 text-sm font-medium text-muted">Ежедневные</h2>
+      <h2 className="mb-1 text-sm font-medium text-muted">Ежедневные</h2>
+      <p className="mb-2 text-xs text-muted">Всего получено: {formatUsdd(dailyEarnedTotal)}</p>
       <div
         className={`mb-2 flex items-center gap-3 rounded-2xl border p-4 ${
           !dailyBonus.available ? 'border-positive/30 bg-positive/5' : 'border-border bg-card'
@@ -90,6 +91,7 @@ export function QuestsScreen() {
       </div>
 
       <h2 className="mb-1 text-sm font-medium text-muted">Захват эмиссии</h2>
+      <p className="mb-2 text-xs text-muted">Всего получено: {formatUsdd(emissionEarnedTotal)}</p>
       {!emissionCapture.leaderCoinId && (
         <p className="mb-3 text-sm text-muted">У вас пока нет позиций — купите монету, чтобы начать захват эмиссии.</p>
       )}
@@ -135,27 +137,46 @@ export function QuestsScreen() {
       </div>
 
       <h2 className="mb-1 mt-6 text-sm font-medium text-muted">Награды за ранги</h2>
-      <p className="mb-3 text-sm text-muted">Награда за ранг</p>
+      <p className="mb-1 text-sm text-muted">Награда за ранг</p>
+      <p className="mb-2 text-xs text-muted">Всего получено: {formatUsdd(rankEarnedTotal)}</p>
       <div className="space-y-2">
-        {rankRewards.ladder.map(step => (
-          <div
-            key={step.name}
-            className={`flex items-center gap-3 rounded-2xl border p-3 ${
-              step.achieved ? 'border-positive/30 bg-positive/5' : 'border-border bg-card'
-            }`}
-          >
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-card-light text-lg">
-              {rankEmoji(step.name)}
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="font-semibold">{step.name}</div>
-              <div className={`text-sm ${step.achieved ? 'text-positive' : 'text-muted'}`}>
-                {step.achieved ? 'Выполнено' : `Награда ${formatUsdd(step.reward)}`}
+        {rankRewards.ladder.map(step => {
+          const questId = `rank_reward:${step.rankIndex}`;
+          const ready = step.achieved && !step.claimed;
+          return (
+            <div
+              key={step.name}
+              className={`flex items-center gap-3 rounded-2xl border p-3 ${
+                ready || step.claimed ? 'border-positive/30 bg-positive/5' : 'border-border bg-card'
+              }`}
+            >
+              <div
+                className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-card-light text-lg ${
+                  step.claimed ? 'ring-2 ring-positive' : ''
+                }`}
+              >
+                {rankEmoji(step.name)}
               </div>
+              <div className="min-w-0 flex-1">
+                <div className="font-semibold">{step.name}</div>
+                <div className={`text-sm ${ready || step.claimed ? 'text-positive' : 'text-muted'}`}>
+                  {step.claimed ? 'Выполнено' : ready ? 'Готово' : `Награда ${formatUsdd(step.reward)}`}
+                </div>
+              </div>
+              {step.claimed ? (
+                <CheckIcon className="h-5 w-5 shrink-0 text-positive" />
+              ) : (
+                <button
+                  disabled={!ready || busyId === questId}
+                  onClick={() => claim(questId)}
+                  className="shrink-0 rounded-full bg-positive px-4 py-2 text-sm font-semibold text-black disabled:bg-card-light disabled:text-muted"
+                >
+                  {formatUsdd(step.reward)}
+                </button>
+              )}
             </div>
-            {step.achieved && <CheckIcon className="h-5 w-5 shrink-0 text-positive" />}
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

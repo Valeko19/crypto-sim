@@ -9,6 +9,7 @@ export async function resetAllPlayers(): Promise<number> {
   await db.query('DELETE FROM quest_progress');
   await db.query('DELETE FROM player_rank_progress');
   await db.query('DELETE FROM staking_positions');
+  await db.query('DELETE FROM player_earned_totals');
   await db.query(
     'UPDATE players SET usdd_balance = 100, trades_count = 0, total_volume = 0, realized_pnl = 0'
   );

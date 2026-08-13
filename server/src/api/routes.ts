@@ -23,6 +23,7 @@ import {
   createStakingPosition, getPositionById, requestUnstakePosition, deleteStakingPosition,
   withdrawStakingPosition, claimFlexibleCoinRewards, isPositionReserved,
   getTradingBot, configureTradingBot, setTradingBotEnabled, getHighestLeagueIndex,
+  addEarnedTotal, getEarnedTotals,
 } from '../db/queries.js';
 import { computePortfolio, computeLeaderboard, findEmissionLeader, computeStaking } from './helpers.js';
 import { STAKING_FLEXIBLE_COOLDOWN_MS, STAKING_FLEXIBLE_APR } from '../config/staking.js';
@@ -236,11 +237,26 @@ export function createRouter(state: EngineState) {
       };
     });
 
+    // achieved just means "peak ever reached this rank" (see rankRewards.ts) —
+    // claimed is tracked the same way as emission_capture, via quest_progress
+    // with quest_type='rank_reward' and threshold repurposed to hold the rank
+    // index (coin_id unused, stored as 'none').
     const highestLeagueIndex = await getHighestLeagueIndex(req.playerId);
     const rankLadder = RANKS.slice(1).map((r, i) => {
       const rankIndex = i + 1; // RANKS[0] (Планктон) is skipped — starting rank, no reward
-      return { name: r.name, reward: RANK_UP_REWARDS[rankIndex] ?? 0, achieved: highestLeagueIndex >= rankIndex };
+      const claimed = progress.some(
+        p => p.quest_type === 'rank_reward' && p.threshold === rankIndex && p.claimed_at
+      );
+      return {
+        name: r.name,
+        reward: RANK_UP_REWARDS[rankIndex] ?? 0,
+        rankIndex,
+        achieved: highestLeagueIndex >= rankIndex,
+        claimed,
+      };
     });
+
+    const earned = await getEarnedTotals(req.playerId);
 
     res.json({
       dailyBonus: { amount: DAILY_BONUS_AMOUNT, available: dailyAvailable, claimedAt: dailyRow?.claimed_at ?? null },
@@ -252,13 +268,16 @@ export function createRouter(state: EngineState) {
         claimed: volumeRecentlyClaimed,
         claimedAt: volumeRow?.claimed_at ?? null,
       },
+      dailyEarnedTotal: earned.daily,
       emissionCapture: {
         leaderCoinId: leader?.coinId ?? null,
         leaderSymbol: leader ? COIN_MAP[leader.coinId].symbol : null,
         leaderPct: leader?.pct ?? 0,
         ladder,
       },
+      emissionEarnedTotal: earned.emission,
       rankRewards: { ladder: rankLadder },
+      rankEarnedTotal: earned.rank,
     });
   });
 
@@ -275,6 +294,7 @@ export function createRouter(state: EngineState) {
       await claimQuestRow(req.playerId, 'daily_bonus', 'none', 0);
       const { db } = await import('../db/index.js');
       await db.query('UPDATE players SET usdd_balance = usdd_balance + $1 WHERE id = $2', [DAILY_BONUS_AMOUNT, req.playerId]);
+      await addEarnedTotal(req.playerId, 'daily', DAILY_BONUS_AMOUNT);
       return res.json({ success: true, amount: DAILY_BONUS_AMOUNT });
     }
 
@@ -291,6 +311,7 @@ export function createRouter(state: EngineState) {
       await claimQuestRow(req.playerId, 'daily_volume', 'none', 0);
       const { db } = await import('../db/index.js');
       await db.query('UPDATE players SET usdd_balance = usdd_balance + $1 WHERE id = $2', [DAILY_VOLUME_REWARD, req.playerId]);
+      await addEarnedTotal(req.playerId, 'daily', DAILY_VOLUME_REWARD);
       return res.json({ success: true, amount: DAILY_VOLUME_REWARD });
     }
 
@@ -316,7 +337,35 @@ export function createRouter(state: EngineState) {
       await claimQuestRow(req.playerId, 'emission_capture', coinId, threshold);
       const { db } = await import('../db/index.js');
       await db.query('UPDATE players SET usdd_balance = usdd_balance + $1 WHERE id = $2', [def.reward, req.playerId]);
+      await addEarnedTotal(req.playerId, 'emission', def.reward);
       return res.json({ success: true, amount: def.reward });
+    }
+
+    if (questId.startsWith('rank_reward:')) {
+      const [, rankIndexStr] = questId.split(':');
+      const rankIndex = Number(rankIndexStr);
+      const reward = RANK_UP_REWARDS[rankIndex] ?? 0;
+      if (!Number.isInteger(rankIndex) || rankIndex <= 0 || rankIndex >= RANKS.length || reward <= 0) {
+        return res.status(400).json({ error: 'invalid rank' });
+      }
+
+      // achieved = peak ever reached (see rankRewards.ts) — never the live
+      // rank, so this can't be gamed by dipping back below the threshold.
+      const highestLeagueIndex = await getHighestLeagueIndex(req.playerId);
+      if (highestLeagueIndex < rankIndex) {
+        return res.status(400).json({ error: 'rank not yet achieved' });
+      }
+      const progress = await getQuestProgress(req.playerId);
+      const already = progress.some(
+        p => p.quest_type === 'rank_reward' && p.threshold === rankIndex && p.claimed_at
+      );
+      if (already) return res.status(400).json({ error: 'already claimed' });
+
+      await claimQuestRow(req.playerId, 'rank_reward', 'none', rankIndex);
+      const { db } = await import('../db/index.js');
+      await db.query('UPDATE players SET usdd_balance = usdd_balance + $1 WHERE id = $2', [reward, req.playerId]);
+      await addEarnedTotal(req.playerId, 'rank', reward);
+      return res.json({ success: true, amount: reward });
     }
 
     return res.status(400).json({ error: 'unknown quest' });

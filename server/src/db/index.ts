@@ -111,5 +111,17 @@ export async function initDb() {
       id TEXT PRIMARY KEY,
       ran_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+
+    -- Lifetime totals earned per quest section, shown on the Quests screen as
+    -- a simple running counter ("Всего получено: $X") — deliberately NOT a
+    -- claim history table (same reasoning as never having kept a trade
+    -- history: nothing here needs to be re-derived from a log, each column
+    -- just gets incremented by the reward amount at the moment of each claim).
+    CREATE TABLE IF NOT EXISTS player_earned_totals (
+      player_id TEXT PRIMARY KEY REFERENCES players(id),
+      daily_earned_total DOUBLE PRECISION NOT NULL DEFAULT 0,
+      emission_earned_total DOUBLE PRECISION NOT NULL DEFAULT 0,
+      rank_earned_total DOUBLE PRECISION NOT NULL DEFAULT 0
+    );
   `);
 }

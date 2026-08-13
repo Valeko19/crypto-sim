@@ -25,6 +25,8 @@
 //     from scratch)
 //   - staking_positions -> deleted entirely (both staked principal and any
 //     accrued pending_rewards are forfeited)
+//   - player_earned_totals -> deleted entirely (the "Всего получено" lifetime
+//     counters shown per quest section go back to $0)
 //   - trading_bots.enabled -> false for every bot (an already-enabled bot
 //     otherwise fires on its own background schedule and immediately spends
 //     the freshly-reset $100 balance the moment the server is back up —

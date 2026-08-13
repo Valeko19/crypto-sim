@@ -154,6 +154,46 @@ export async function claimQuestRow(
   );
 }
 
+// --- Lifetime earned totals (per quest section) -----------------------------
+// One column per section on the Quests screen — see player_earned_totals'
+// table comment (db/index.ts). Column names can't be parameterized, so each
+// category gets its own static query rather than interpolating an identifier.
+
+export type EarnedCategory = 'daily' | 'emission' | 'rank';
+
+const EARNED_TOTAL_UPSERT: Record<EarnedCategory, string> = {
+  daily: `INSERT INTO player_earned_totals (player_id, daily_earned_total) VALUES ($1, $2)
+          ON CONFLICT (player_id) DO UPDATE SET daily_earned_total = player_earned_totals.daily_earned_total + $2`,
+  emission: `INSERT INTO player_earned_totals (player_id, emission_earned_total) VALUES ($1, $2)
+             ON CONFLICT (player_id) DO UPDATE SET emission_earned_total = player_earned_totals.emission_earned_total + $2`,
+  rank: `INSERT INTO player_earned_totals (player_id, rank_earned_total) VALUES ($1, $2)
+         ON CONFLICT (player_id) DO UPDATE SET rank_earned_total = player_earned_totals.rank_earned_total + $2`,
+};
+
+export async function addEarnedTotal(playerId: string, category: EarnedCategory, amount: number): Promise<void> {
+  if (amount <= 0) return;
+  await db.query(EARNED_TOTAL_UPSERT[category], [playerId, amount]);
+}
+
+export interface EarnedTotals {
+  daily: number;
+  emission: number;
+  rank: number;
+}
+
+export async function getEarnedTotals(playerId: string): Promise<EarnedTotals> {
+  const res = await db.query<{ daily_earned_total: number; emission_earned_total: number; rank_earned_total: number }>(
+    'SELECT daily_earned_total, emission_earned_total, rank_earned_total FROM player_earned_totals WHERE player_id = $1',
+    [playerId]
+  );
+  const row = res.rows[0];
+  return {
+    daily: Number(row?.daily_earned_total ?? 0),
+    emission: Number(row?.emission_earned_total ?? 0),
+    rank: Number(row?.rank_earned_total ?? 0),
+  };
+}
+
 export interface PoolSnapshotRow {
   coin_id: string;
   coin_reserve: number;
