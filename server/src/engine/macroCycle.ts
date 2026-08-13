@@ -2,10 +2,28 @@ export type MacroPhase = 'accumulation' | 'early_bull' | 'bull' | 'euphoria' | '
 
 // Fixed cyclical order (not a probability graph) per spec: accumulation -> early_bull
 // -> bull -> euphoria -> bear -> back to accumulation. Durations are randomized within
-// these configurable ranges each time a phase is entered; total cycle lands ~30-90 min
-// (compressed from an original ~1-3 day design so the cycle is observable within a
-// normal play session instead of only ever being reachable via the debug phase buttons).
+// these configurable ranges each time a phase is entered; at PHASE_DURATION_MULTIPLIER=1
+// the total cycle lands ~30-90 min (compressed from an original ~1-3 day design so the
+// cycle is observable within a normal play session instead of only ever being reachable
+// via the debug phase buttons). PHASE_DURATION_MULTIPLIER scales every phase's duration
+// up from that 1x baseline toward the eventual 1-3 day target, in one place.
 export const MACRO_ORDER: MacroPhase[] = ['accumulation', 'early_bull', 'bull', 'euphoria', 'bear'];
+
+// Single knob for stretching every phase's duration by the same factor, so the
+// cycle can be lengthened toward the eventual 1-3 day target incrementally —
+// one constant at a time — without hand-editing five phases and risking their
+// relative proportions drifting apart (e.g. euphoria must stay conspicuously
+// shorter than the others). Applied via scaled() below, right at each phase's
+// base (1x) min/maxDurationMin — those two numbers in each entry are always
+// the pre-multiplier baseline, never the effective duration.
+export const PHASE_DURATION_MULTIPLIER = 3;
+
+function scaled(minDurationMin: number, maxDurationMin: number) {
+  return {
+    minDurationMin: minDurationMin * PHASE_DURATION_MULTIPLIER,
+    maxDurationMin: maxDurationMin * PHASE_DURATION_MULTIPLIER,
+  };
+}
 
 export interface MacroPhaseConfig {
   minDurationMin: number;
@@ -49,11 +67,11 @@ export interface MacroPhaseConfig {
 // ~+239% i.e. ~3.39x (range 2x-5x), euphoria ~+64% (range +30%/+100%), bear
 // ~-66% (range -50%/-80%) — none of these needed a bounds change.
 export const MACRO_CONFIG: Record<MacroPhase, MacroPhaseConfig> = {
-  accumulation: { minDurationMin: 12, maxDurationMin: 32, totalMoveRange: [1 / 1.15, 1.15], volMultiplier: 1.0, fearGreedBase: 32, label: 'Зима', localCycleUpBias: 0.5 },
-  early_bull: { minDurationMin: 8, maxDurationMin: 20, totalMoveRange: [1.15, 1.6], volMultiplier: 1.1, fearGreedBase: 55, label: 'Восстановление', localCycleUpBias: 0.62 },
-  bull: { minDurationMin: 10, maxDurationMin: 24, totalMoveRange: [2, 5], volMultiplier: 1.3, fearGreedBase: 68, label: 'Бычий', localCycleUpBias: 0.72 },
-  euphoria: { minDurationMin: 2, maxDurationMin: 8, totalMoveRange: [1.3, 2], volMultiplier: 1.8, fearGreedBase: 88, label: 'Распределение', localCycleUpBias: 0.78 },
-  bear: { minDurationMin: 8, maxDurationMin: 24, totalMoveRange: [0.2, 0.5], volMultiplier: 1.5, fearGreedBase: 18, label: 'Медвежий', localCycleUpBias: 0.25 },
+  accumulation: { ...scaled(12, 32), totalMoveRange: [1 / 1.15, 1.15], volMultiplier: 1.0, fearGreedBase: 32, label: 'Зима', localCycleUpBias: 0.5 },
+  early_bull: { ...scaled(8, 20), totalMoveRange: [1.15, 1.6], volMultiplier: 1.1, fearGreedBase: 55, label: 'Восстановление', localCycleUpBias: 0.62 },
+  bull: { ...scaled(10, 24), totalMoveRange: [2, 5], volMultiplier: 1.3, fearGreedBase: 68, label: 'Бычий', localCycleUpBias: 0.72 },
+  euphoria: { ...scaled(2, 8), totalMoveRange: [1.3, 2], volMultiplier: 1.8, fearGreedBase: 88, label: 'Распределение', localCycleUpBias: 0.78 },
+  bear: { ...scaled(8, 24), totalMoveRange: [0.2, 0.5], volMultiplier: 1.5, fearGreedBase: 18, label: 'Медвежий', localCycleUpBias: 0.25 },
 };
 
 export function nextPhase(current: MacroPhase): MacroPhase {
