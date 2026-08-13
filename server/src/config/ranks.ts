@@ -24,14 +24,14 @@ export const RANKS: RankDef[] = [
 // boundary — only ever compared against the peak, never the live value.
 export const RANK_UP_REWARDS: number[] = [
   0, // Планктон
-  200, // Креветка
-  2_000, // Краб
-  10_000, // Осьминог
-  50_000, // Дельфин
-  200_000, // Акула
-  2_000_000, // Касатка
-  20_000_000, // Кит
-  200_000_000, // Кракен
+  100, // Креветка
+  1_000, // Краб
+  5_000, // Осьминог
+  25_000, // Дельфин
+  100_000, // Акула
+  1_000_000, // Касатка
+  10_000_000, // Кит
+  100_000_000, // Кракен
 ];
 
 export function rankForNetWorth(netWorth: number): RankDef {
