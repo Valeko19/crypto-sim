@@ -32,16 +32,30 @@ export function buyWithUsdd(pool: Pool, usddIn: number): TradeResult {
   const newUsddReserve = pool.usddReserve + usddIn;
   const newCoinReserve = kk / newUsddReserve;
   let coinOut = pool.coinReserve - newCoinReserve;
-  if (coinOut > pool.coinReserve * MAX_RESERVE_FRACTION) {
-    coinOut = pool.coinReserve * MAX_RESERVE_FRACTION;
+  // usddSpent tracks how much of usddIn actually enters the reserve. Normally
+  // that's all of it, but when the MAX_RESERVE_FRACTION cap below kicks in,
+  // only the fraction of usddIn that corresponds to the capped coinOut (by
+  // the SAME constant-product formula, solved in reverse) may enter — adding
+  // the full usddIn while only removing the capped coinOut would grow k for
+  // free, silently inflating the post-trade price beyond the honest
+  // constant-product curve. Whatever's left of usddIn past that point must
+  // simply not be spent; callers see the smaller coinOut/usddSpent and charge
+  // the player only for what actually executed.
+  let usddSpent = usddIn;
+  const maxCoinOut = pool.coinReserve * MAX_RESERVE_FRACTION;
+  if (coinOut > maxCoinOut) {
+    coinOut = maxCoinOut;
+    const cappedNewCoinReserve = pool.coinReserve - coinOut;
+    const cappedNewUsddReserve = kk / cappedNewCoinReserve;
+    usddSpent = cappedNewUsddReserve - pool.usddReserve;
   }
   pool.coinReserve -= coinOut;
-  pool.usddReserve += usddIn;
+  pool.usddReserve += usddSpent;
   const priceAfter = price(pool);
-  const avgPrice = usddIn / coinOut;
+  const avgPrice = usddSpent / coinOut;
   return {
     coinAmount: coinOut,
-    usddAmount: usddIn,
+    usddAmount: usddSpent,
     avgPrice,
     priceBefore,
     priceAfter,
@@ -49,6 +63,10 @@ export function buyWithUsdd(pool: Pool, usddIn: number): TradeResult {
   };
 }
 
+// Unlike buyWithUsdd, this one caps its OWN input (cappedCoinIn) before ever
+// deriving usddOut from it, and that same capped value is what both reserves
+// get updated with below — so k stays exactly preserved on its own; there is
+// no equivalent bug here to fix, just confirming it via the same audit.
 export function sellCoin(pool: Pool, coinIn: number): TradeResult {
   const priceBefore = price(pool);
   const kk = k(pool);

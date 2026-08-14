@@ -46,10 +46,18 @@ async function executeTradeUnlocked(state: EngineState, playerId: string, params
     const fee = usddIn * tradeFeePct(coinId);
     const netIn = usddIn - fee;
     const result = buyWithUsdd(cs.pool, netIn);
-    await applyBuy(playerId, coinId, result.coinAmount, usddIn, result.avgPrice);
+    // buyWithUsdd's own MAX_RESERVE_FRACTION cap can execute LESS than the
+    // requested netIn (result.usddAmount < netIn on a very large trade against
+    // a thin pool) — scale the fee down by the same executed fraction and
+    // charge the player only for what actually happened, never for the
+    // untouched leftover of their original request.
+    const executedFraction = netIn > 0 ? result.usddAmount / netIn : 1;
+    const actualFee = fee * executedFraction;
+    const totalCharged = result.usddAmount + actualFee;
+    await applyBuy(playerId, coinId, result.coinAmount, totalCharged, result.avgPrice);
     cs.playerOwnedCoins += result.coinAmount;
-    recordTradeVolume(playerId, usddIn);
-    return { ...result, fee };
+    recordTradeVolume(playerId, totalCharged);
+    return { ...result, fee: actualFee };
   } else if (side === 'sell') {
     const holding = await getHolding(playerId, coinId);
     if (!holding || holding.amount <= 0) throw new TradeError('no holding to sell');
@@ -64,8 +72,13 @@ async function executeTradeUnlocked(state: EngineState, playerId: string, params
     const result = sellCoin(cs.pool, coinIn);
     const fee = result.usddAmount * tradeFeePct(coinId);
     const netOut = result.usddAmount - fee;
-    await applySell(playerId, coinId, coinIn, netOut, result.avgPrice);
-    cs.playerOwnedCoins = Math.max(0, cs.playerOwnedCoins - coinIn);
+    // sellCoin can itself cap coinIn via MAX_RESERVE_FRACTION — result.coinAmount
+    // is what actually entered the pool, which can be less than the requested
+    // coinIn. Must remove exactly that much from the holding, not the
+    // originally-requested coinIn, or the player loses coins that were never
+    // actually sold.
+    await applySell(playerId, coinId, result.coinAmount, netOut, result.avgPrice);
+    cs.playerOwnedCoins = Math.max(0, cs.playerOwnedCoins - result.coinAmount);
     recordTradeVolume(playerId, netOut);
     return { ...result, usddAmount: netOut, fee };
   }
