@@ -32,6 +32,16 @@
 //     the freshly-reset $100 balance the moment the server is back up —
 //     target/interval/amount are left as configured, only the running state
 //     is turned off; the player re-enables it themselves)
+//   - coin_pools -> deleted entirely, so the NEXT server boot builds every
+//     pool fresh from config/coins.ts's current startPrice/npcLockedPct
+//     instead of resuming old reserves snapshotted under a prior config —
+//     this only takes effect once the server actually restarts afterward,
+//     since this script doesn't touch any already-running process's
+//     in-memory pools directly
+//   - player-owned-coin tracking (used by the price-gravity anchor) and the
+//     macro cycle phase both also start fresh on the next boot, with no
+//     separate reset step needed here — see resetAllPlayers()' own comment
+//     for why
 //
 // Safety: requires an explicit --yes flag so it can never run by accident.
 import { initDb } from '../src/db/index.js';
@@ -41,7 +51,8 @@ async function main() {
   if (!process.argv.includes('--yes')) {
     console.error(
       'This PERMANENTLY wipes progress for ALL existing players: balance -> $100, ' +
-        'all holdings/quest progress/rank progress/staking positions deleted, all bots disabled. ' +
+        'all holdings/quest progress/rank progress/staking positions deleted, all bots disabled, ' +
+        'AND clears saved coin pool reserves (next boot rebuilds them from the current coin config). ' +
         'Re-run with --yes to actually execute.'
     );
     process.exit(1);
@@ -54,7 +65,8 @@ async function main() {
 
   console.log(
     `Done. ${count} player(s) reset to a fresh $100 balance with no holdings, quest progress, ` +
-      'rank progress, or staking positions. All trading bots were disabled (config left intact).'
+      'rank progress, or staking positions. All trading bots were disabled (config left intact). ' +
+      'Coin pools were cleared — restart the server now so it rebuilds them from the current config.'
   );
   process.exit(0);
 }

@@ -10,6 +10,22 @@ export async function resetAllPlayers(): Promise<number> {
   await db.query('DELETE FROM player_rank_progress');
   await db.query('DELETE FROM staking_positions');
   await db.query('DELETE FROM player_earned_totals');
+  // This runs BEFORE createInitialState() in index.ts's main() — there's no
+  // live EngineState yet to touch directly, only this saved-snapshot table.
+  // Dropping it makes the boot sequence that follows fall through to
+  // createInitialState()'s fresh, config-derived pools (current startPrice/
+  // npcLockedPct in config/coins.ts) instead of resuming old reserves that
+  // were snapshotted under whatever config was live back then.
+  //
+  // Two related pieces of market state need NO code here, because of how
+  // that same boot sequence already works: engine/state.ts's playerOwnedCoins
+  // (used by gravity.ts) is recomputed at every boot straight from
+  // player_holdings — already wiped above, so it lands on 0 for every coin
+  // for free. And EngineState.macroPhase is pure in-memory, never persisted
+  // anywhere — createInitialState() always sets it to 'accumulation' (Зима)
+  // on every process start, reset or not, so it's already guaranteed fresh
+  // after this same restart.
+  await db.query('DELETE FROM coin_pools');
   await db.query(
     'UPDATE players SET usdd_balance = 100, trades_count = 0, total_volume = 0, realized_pnl = 0'
   );
@@ -55,6 +71,7 @@ export async function maybeRunPlayerResetOnBoot(): Promise<void> {
   await db.query('INSERT INTO admin_reset_log (id) VALUES ($1)', [markerId]);
   console.log(
     `[playerReset] Done — ${count} player(s) reset to a fresh $100 balance with no holdings, ` +
-      'quest/rank/staking progress. All trading bots disabled (config left intact).'
+      'quest/rank/staking progress. All trading bots disabled (config left intact). Coin pools, ' +
+      'player-owned-coin tracking, and the macro phase all start fresh from this same boot.'
   );
 }
