@@ -17,6 +17,8 @@ import { runTradingBots } from './engine/tradingBot.js';
 import { BOT_POLL_INTERVAL_MS } from './config/tradingBot.js';
 import { checkRankUpRewards } from './engine/rankRewards.js';
 import { maybeRunPlayerResetOnBoot } from './admin/playerReset.js';
+import { updateNetExtracted } from './engine/gravity.js';
+import { NET_EXTRACTED_CHECK_INTERVAL_MS } from './config/netExtracted.js';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 8787;
 
@@ -122,6 +124,10 @@ async function main() {
   setInterval(() => {
     runTradingBots(state).catch(() => {});
   }, BOT_POLL_INTERVAL_MS);
+
+  setInterval(() => {
+    updateNetExtracted(state);
+  }, NET_EXTRACTED_CHECK_INTERVAL_MS);
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.on(signal, () => {
