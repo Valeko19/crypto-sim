@@ -65,9 +65,6 @@ async function executeTradeUnlocked(state: EngineState, playerId: string, params
     const totalCharged = result.usddAmount + actualFee;
     await applyBuy(playerId, coinId, result.coinAmount, totalCharged, result.avgPrice);
     cs.playerOwnedCoins += result.coinAmount;
-    // Feeds gravity.ts's periodic netExtracted settlement — a buy is capital
-    // flowing IN, which (over a period) heals any accumulated extraction.
-    cs.pendingNetFlowUsdd += totalCharged;
     recordTradeVolume(playerId, totalCharged);
     return { ...result, fee: actualFee };
   } else if (side === 'sell') {
@@ -96,10 +93,6 @@ async function executeTradeUnlocked(state: EngineState, playerId: string, params
     // actually sold.
     await applySell(playerId, coinId, result.coinAmount, netOut, result.avgPrice);
     cs.playerOwnedCoins = Math.max(0, cs.playerOwnedCoins - result.coinAmount);
-    // Feeds gravity.ts's periodic netExtracted settlement — a sell is capital
-    // flowing OUT, which (over a period of sustained one-way selling) grows
-    // accumulated extraction.
-    cs.pendingNetFlowUsdd -= netOut;
     recordTradeVolume(playerId, netOut);
     return { ...result, usddAmount: netOut, fee };
   }

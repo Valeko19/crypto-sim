@@ -51,19 +51,6 @@ export interface CoinState {
   // reserves because those also move from background drift, not just real buys.
   projectLevel: number;
   playerOwnedCoins: number;
-  // Symmetric counterpart to playerOwnedCoins for gravity.ts's OTHER
-  // justifiedPrice multiplier: accumulated net USDD pulled out of this coin
-  // (sells minus buys) across periods of sustained one-way selling, settled
-  // periodically from pendingNetFlowUsdd (see engine/netExtracted.ts) rather
-  // than live per-trade — a snapshot-per-period the same way liveliness
-  // decay uses elapsed real time, not a per-tick nudge. Floored at 0 and
-  // healed back down by organic buying, so it never fixes a coin's price
-  // down permanently — see justifiedPrice's own comment.
-  netExtracted: number;
-  // Running per-coin net USDD flow (buys positive, sells negative) since the
-  // last periodic settlement into netExtracted above — reset to 0 every time
-  // that settlement runs.
-  pendingNetFlowUsdd: number;
   // Sub-candle texture (see tick.ts): a bounded, mean-reverting multiplier on
   // the noise terms so amplitude itself clusters (calm patches vs. bursty
   // patches) instead of every tick drawing from the same fixed-width
@@ -143,8 +130,6 @@ export function createInitialState(): EngineState {
       lastTick: { macroDriftPct: 0, localDriftPct: 0, baseNoisePct: 0, relativeNoisePct: 0, stumblePct: 0, gravityPct: 0, newsPct: 0, totalPct: 0 },
       projectLevel: cfg.startPrice,
       playerOwnedCoins: 0, // corrected at boot from real holdings (see index.ts)
-      netExtracted: 0,
-      pendingNetFlowUsdd: 0,
       noiseAmpState: 1,
       stumblePending: 0,
       lastCandleColor: null,
