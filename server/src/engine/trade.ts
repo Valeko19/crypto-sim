@@ -17,6 +17,15 @@ export interface TradeParams {
   side: 'buy' | 'sell';
   amountUsdd?: number;
   amountCoin?: number;
+  // Sell only: the client's sell slider was at exactly 100% (regardless of
+  // which unit it's displaying). Tells the server to use ITS OWN current
+  // sellable balance directly instead of reconstructing an amount from
+  // amountUsdd/amountCoin — for amountUsdd specifically, that reconstruction
+  // divides by the live pool price, so if price ticks between when the
+  // player dragged the slider and when this request lands, the recovered
+  // coin amount drifts from their real holding (under-sells and leaves dust,
+  // or tries to over-sell and gets clamped). useMax sidesteps that entirely.
+  useMax?: boolean;
 }
 
 // Single implementation of a trade, shared by the manual POST /trade route
@@ -27,7 +36,7 @@ export async function executeTrade(state: EngineState, playerId: string, params:
 }
 
 async function executeTradeUnlocked(state: EngineState, playerId: string, params: TradeParams) {
-  const { coinId, side, amountUsdd, amountCoin } = params;
+  const { coinId, side, amountUsdd, amountCoin, useMax } = params;
   const cs = state.coins[coinId];
   const cfg = COIN_MAP[coinId];
   if (!cs || !cfg) throw new TradeError('coin not found', 404);
@@ -61,11 +70,16 @@ async function executeTradeUnlocked(state: EngineState, playerId: string, params
   } else if (side === 'sell') {
     const holding = await getHolding(playerId, coinId);
     if (!holding || holding.amount <= 0) throw new TradeError('no holding to sell');
-    let coinIn: number;
-    if (amountCoin != null) coinIn = Number(amountCoin);
-    else coinIn = Number(amountUsdd) / price(cs.pool);
     const reserved = await reservedStakedAmount(playerId, coinId);
     const sellable = holding.amount - reserved;
+    let coinIn: number;
+    if (useMax) {
+      coinIn = sellable;
+    } else if (amountCoin != null) {
+      coinIn = Number(amountCoin);
+    } else {
+      coinIn = Number(amountUsdd) / price(cs.pool);
+    }
     if (coinIn > sellable) throw new TradeError('coins are staked and cannot be sold');
     coinIn = Math.min(coinIn, sellable);
     if (coinIn <= 0) throw new TradeError('invalid amount');

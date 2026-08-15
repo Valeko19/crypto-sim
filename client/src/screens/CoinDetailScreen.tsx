@@ -28,11 +28,20 @@ export function CoinDetailScreen() {
   const [balance, setBalance] = useState(0);
 
   const [side, setSide] = useState<'buy' | 'sell'>('buy');
-  // Buy is always priced in USDD, sell always in the coin itself — no toggle,
-  // so the unit switches automatically with the side instead of needing a
-  // separate control that could get out of sync with it.
-  const mode = side === 'buy' ? 'usdd' : 'coin';
+  // Buy is always priced in USDD — no toggle, since the server only ever
+  // accepts a USDD amount for buys (a coin-quantity buy used to silently
+  // fail). Sell defaults to coin quantity, which sidesteps the USDD-mode
+  // price race on submit in the common case, but can still be switched to
+  // USDD — sellMode only matters while side === 'sell'.
+  const [sellMode, setSellMode] = useState<'usdd' | 'coin'>('coin');
+  const mode = side === 'buy' ? 'usdd' : sellMode;
   const [amount, setAmount] = useState('');
+  // True exactly when the CURRENT amount came from dragging/tapping the
+  // slider to 100%, cleared by any manual edit — lets submit() tell the
+  // server "sell everything you show as sellable" (useMax) regardless of
+  // whether price moves between now and execution, instead of trusting a
+  // client-computed amount that could drift from the real holding.
+  const [isMaxAmount, setIsMaxAmount] = useState(false);
   const [quote, setQuote] = useState<{ avgPrice: number; priceImpactPct: number; feeAmount: number; feePct: number; out: number } | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -230,6 +239,7 @@ export function CoinDetailScreen() {
   function applyPct(pct: number) {
     const raw = available * (pct / 100);
     setAmount(raw > 0 ? String(Number(raw.toFixed(8))) : '');
+    setIsMaxAmount(pct === 100);
   }
 
   // The input shows a thousands-grouped display (formatAmountInput) while
@@ -244,6 +254,7 @@ export function CoinDetailScreen() {
 
     const cleaned = parseAmountInput(rawValue);
     setAmount(cleaned);
+    setIsMaxAmount(false);
 
     requestAnimationFrame(() => {
       const formatted = formatAmountInput(cleaned);
@@ -282,7 +293,13 @@ export function CoinDetailScreen() {
     setBusy(true);
     setMessage(null);
     try {
-      const body = mode === 'usdd' ? { coinId, side, amountUsdd: num } : { coinId, side, amountCoin: num };
+      const body: { coinId: string; side: 'buy' | 'sell'; amountUsdd?: number; amountCoin?: number; useMax?: boolean } =
+        mode === 'usdd' ? { coinId, side, amountUsdd: num } : { coinId, side, amountCoin: num };
+      // See isMaxAmount's declaration — tells the server to sell its own
+      // current sellable balance directly rather than reconstruct one from
+      // amountUsdd/amountCoin, so a 100% sell can't be thrown off by price
+      // moving between submit and execution.
+      if (side === 'sell' && isMaxAmount) body.useMax = true;
       const res = await api.trade(body);
       setMessage(
         side === 'buy'
@@ -338,21 +355,30 @@ export function CoinDetailScreen() {
       <div className="mt-4 rounded-2xl border border-border bg-card p-4">
         <div className="mb-3 flex gap-2">
           <button
-            onClick={() => { setSide('buy'); setAmount(''); }}
+            onClick={() => { setSide('buy'); setAmount(''); setIsMaxAmount(false); }}
             className={`flex-1 rounded-xl py-2 text-sm font-semibold transition-colors ${side === 'buy' ? 'bg-positive/20 text-positive' : 'text-muted'}`}
           >
             Купить
           </button>
           <button
-            onClick={() => { setSide('sell'); setAmount(''); }}
+            onClick={() => { setSide('sell'); setSellMode('coin'); setAmount(''); setIsMaxAmount(false); }}
             className={`flex-1 rounded-xl py-2 text-sm font-semibold transition-colors ${side === 'sell' ? 'bg-negative/20 text-negative' : 'text-muted'}`}
           >
             Продать
           </button>
         </div>
 
-        <div className="mb-2 text-xs text-muted">
-          {mode === 'usdd' ? 'Сумма в USDD' : `Количество ${coin?.symbol ?? ''}`}
+        <div className="mb-2 flex items-center justify-between text-xs text-muted">
+          <span>{mode === 'usdd' ? 'Сумма в USDD' : `Количество ${coin?.symbol ?? ''}`}</span>
+          {side === 'sell' && (
+            <button
+              type="button"
+              onClick={() => { setSellMode(m => (m === 'coin' ? 'usdd' : 'coin')); setAmount(''); setIsMaxAmount(false); }}
+              className="text-accent-to hover:underline"
+            >
+              {sellMode === 'coin' ? 'В USDD' : `В ${coin?.symbol ?? 'монетах'}`}
+            </button>
+          )}
         </div>
         <input
           type="text"

@@ -95,9 +95,9 @@ export function createRouter(state: EngineState) {
   });
 
   router.post('/trade', async (req, res) => {
-    const { coinId, side, amountUsdd, amountCoin } = req.body;
+    const { coinId, side, amountUsdd, amountCoin, useMax } = req.body;
     try {
-      const result = await executeTrade(state, req.playerId, { coinId, side, amountUsdd, amountCoin });
+      const result = await executeTrade(state, req.playerId, { coinId, side, amountUsdd, amountCoin, useMax });
       res.json(result);
     } catch (e) {
       const status = e instanceof TradeError ? e.status : 400;

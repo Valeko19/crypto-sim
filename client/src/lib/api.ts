@@ -134,7 +134,7 @@ export const api = {
     req<{ expectedCoinOut?: number; expectedUsddOut?: number; avgPrice: number; priceImpactPct: number; feeAmount: number; feePct: number }>(
       '/trade/quote', { method: 'POST', body: JSON.stringify(body) }
     ),
-  trade: (body: { coinId: string; side: 'buy' | 'sell'; amountUsdd?: number; amountCoin?: number }) =>
+  trade: (body: { coinId: string; side: 'buy' | 'sell'; amountUsdd?: number; amountCoin?: number; useMax?: boolean }) =>
     req<{ coinAmount: number; usddAmount: number; avgPrice: number; slippagePct: number; fee: number }>(
       '/trade', { method: 'POST', body: JSON.stringify(body) }
     ),
