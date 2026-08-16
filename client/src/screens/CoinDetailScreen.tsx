@@ -235,6 +235,7 @@ export function CoinDetailScreen() {
   const available = side === 'buy'
     ? (mode === 'usdd' ? balance : (livePrice > 0 ? balance / livePrice : 0))
     : (mode === 'usdd' ? (holding?.amount ?? 0) * livePrice : (holding?.amount ?? 0));
+  const sliderPct = available > 0 ? Math.max(0, Math.min(100, ((Number(amount) || 0) / available) * 100)) : 0;
 
   function applyPct(pct: number) {
     const raw = available * (pct / 100);
@@ -356,13 +357,13 @@ export function CoinDetailScreen() {
         <div className="mb-3 flex gap-2">
           <button
             onClick={() => { setSide('buy'); setAmount(''); setIsMaxAmount(false); }}
-            className={`flex-1 rounded-xl py-2 text-sm font-semibold transition-colors ${side === 'buy' ? 'bg-positive/20 text-positive' : 'text-muted'}`}
+            className={`flex-1 rounded-xl py-2 text-sm font-semibold transition-colors ${side === 'buy' ? 'bg-positive text-[#04342C]' : 'text-muted'}`}
           >
             Купить
           </button>
           <button
             onClick={() => { setSide('sell'); setSellMode('coin'); setAmount(''); setIsMaxAmount(false); }}
-            className={`flex-1 rounded-xl py-2 text-sm font-semibold transition-colors ${side === 'sell' ? 'bg-negative/20 text-negative' : 'text-muted'}`}
+            className={`flex-1 rounded-xl py-2 text-sm font-semibold transition-colors ${side === 'sell' ? 'bg-negative text-[#4A1315]' : 'text-muted'}`}
           >
             Продать
           </button>
@@ -396,7 +397,27 @@ export function CoinDetailScreen() {
           </span>
         </div>
 
-        <div className="mt-3 grid grid-cols-4 gap-2">
+        <div className="mt-3">
+          <input
+            type="range"
+            min={0}
+            max={100}
+            step={1}
+            value={sliderPct}
+            onChange={e => applyPct(Number(e.target.value))}
+            disabled={available <= 0}
+            className="w-full accent-accent-to disabled:opacity-30"
+          />
+          <div className="mt-1 flex justify-between text-[10px] text-muted">
+            <span>0%</span>
+            <span>25%</span>
+            <span>50%</span>
+            <span>75%</span>
+            <span>100%</span>
+          </div>
+        </div>
+
+        <div className="mt-2 grid grid-cols-4 gap-2">
           {[25, 50, 75, 100].map(pct => (
             <button
               key={pct}
