@@ -416,6 +416,8 @@ export function createRouter(state: EngineState) {
         amount: bot.amount,
         enabled: bot.enabled,
         nextRunAt: bot.next_run_at,
+        runTotalUsdd: bot.run_total_usdd,
+        runTotalCoins: bot.run_total_coins,
       } : null,
     });
   });

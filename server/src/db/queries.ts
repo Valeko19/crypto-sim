@@ -374,6 +374,8 @@ export interface TradingBotRow {
   amount: number | null;
   enabled: boolean;
   next_run_at: string | null;
+  run_total_usdd: number;
+  run_total_coins: number;
 }
 
 export async function getTradingBot(playerId: string): Promise<TradingBotRow | null> {
@@ -405,18 +407,33 @@ export async function configureTradingBot(
 }
 
 // Resets next_run_at when enabling, so resuming a long-paused bot doesn't
-// immediately fire off a stale schedule from before it was turned off.
+// immediately fire off a stale schedule from before it was turned off — and
+// zeroes the run_total_* counters, so the coin screen's "since this run"
+// metrics start fresh on every start, not carried over from a previous run.
 export async function setTradingBotEnabled(playerId: string, enabled: boolean): Promise<void> {
   if (enabled) {
     const bot = await getTradingBot(playerId);
     if (!bot?.interval_ms) return;
-    await db.query('UPDATE trading_bots SET enabled = TRUE, next_run_at = $2 WHERE player_id = $1', [
-      playerId,
-      new Date(Date.now() + bot.interval_ms).toISOString(),
-    ]);
+    await db.query(
+      `UPDATE trading_bots SET enabled = TRUE, next_run_at = $2, run_total_usdd = 0, run_total_coins = 0
+       WHERE player_id = $1`,
+      [playerId, new Date(Date.now() + bot.interval_ms).toISOString()]
+    );
   } else {
     await db.query('UPDATE trading_bots SET enabled = FALSE WHERE player_id = $1', [playerId]);
   }
+}
+
+// Called after each successful bot-fired trade (see engine/tradingBot.ts) —
+// usddDelta/coinDelta should be the trade's ACTUAL executed size (same
+// convention as recordTradeVolume: total charged for a buy, net received for
+// a sell), not the requested amount, so a MAX_RESERVE_FRACTION-capped trade
+// doesn't over-count.
+export async function addBotRunTotals(playerId: string, usddDelta: number, coinDelta: number): Promise<void> {
+  await db.query(
+    'UPDATE trading_bots SET run_total_usdd = run_total_usdd + $2, run_total_coins = run_total_coins + $3 WHERE player_id = $1',
+    [playerId, usddDelta, coinDelta]
+  );
 }
 
 // Every player with an active, purchased bot — polled by the background job.

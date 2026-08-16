@@ -5,7 +5,7 @@ import { api, CoinListItem, TradingBotStatus } from '../lib/api';
 import { useMarketSocket } from '../hooks/useMarketSocket';
 import { CoinAvatar } from '../components/CoinAvatar';
 import { NewsBanner } from '../components/NewsBanner';
-import { BotIcon, ChevronIcon } from '../components/icons';
+import { BotIcon, ChevronIcon, StopIcon } from '../components/icons';
 import { formatCompact, formatPrice, formatPct, formatPctPlain, formatUsdd, formatQtyCompact, parseAmountInput, formatAmountInput, pctColorClass, pricePrecision } from '../lib/format';
 
 // borderVisible must stay on: quiet coins can have a near-zero-height body for
@@ -17,6 +17,18 @@ const CANDLE_SERIES_OPTIONS: CandlestickSeriesPartialOptions = {
   borderUpColor: '#22C55E', borderDownColor: '#F04452',
   wickUpColor: '#22C55E', wickDownColor: '#F04452',
 };
+
+const BOT_INTERVAL_PRESETS_SEC = [1, 3, 5, 30, 60];
+const BOT_INTERVAL_PRESET_LABELS: Record<number, string> = { 1: '1с', 3: '3с', 5: '5с', 30: '30с', 60: '1м' };
+
+function closestBotIntervalPreset(sec: number): number {
+  return BOT_INTERVAL_PRESETS_SEC.reduce((best, p) => (Math.abs(p - sec) < Math.abs(best - sec) ? p : best));
+}
+
+function botIntervalLabel(intervalMs: number): string {
+  const sec = Math.round(intervalMs / 1000);
+  return BOT_INTERVAL_PRESET_LABELS[sec] ?? `${sec}с`;
+}
 
 export function CoinDetailScreen() {
   const { coinId = '' } = useParams();
@@ -49,14 +61,11 @@ export function CoinDetailScreen() {
   const [botExpanded, setBotExpanded] = useState(false);
   const [botStatus, setBotStatus] = useState<TradingBotStatus | null>(null);
   const [botSide, setBotSide] = useState<'buy' | 'sell'>('buy');
-  const [botIntervalSec, setBotIntervalSec] = useState('5');
+  const [botIntervalSec, setBotIntervalSec] = useState(5);
   const [botAmount, setBotAmount] = useState('');
+  const [botAmountError, setBotAmountError] = useState<string | null>(null);
   const [botBusy, setBotBusy] = useState(false);
   const [botMessage, setBotMessage] = useState<string | null>(null);
-  // Guards the auto-save effect below from firing on the initial prefill from
-  // the server (refreshBotStatus) or on a bare coin-switch — only a real
-  // field edit by the user should trigger a save.
-  const botEditedRef = useRef(false);
 
   const chartRef = useRef<HTMLDivElement | null>(null);
   const chartApiRef = useRef<IChartApi | null>(null);
@@ -80,62 +89,48 @@ export function CoinDetailScreen() {
   function refreshBotStatus() {
     api.getBotStatus().then(bs => {
       setBotStatus(bs);
-      // Prefill the form from the bot's existing config only when it's already
-      // targeting THIS coin — otherwise leave the form at its defaults, since
-      // saving here would retarget the bot away from wherever it currently is.
+      // Prefill the config form from the bot's existing settings only when
+      // it's already targeting THIS coin — otherwise leave the form at its
+      // defaults, since launching here would retarget the bot away from
+      // wherever it currently is.
       if (bs.config?.coinId === coinId) {
         setBotSide(bs.config.side);
-        setBotIntervalSec(String(Math.round((bs.config.intervalMs / 1000) * 100) / 100));
+        setBotIntervalSec(closestBotIntervalPreset(Math.round(bs.config.intervalMs / 1000)));
         setBotAmount(String(bs.config.amount));
       }
-      // This is server state landing in the form, not a user edit — don't let
-      // it be mistaken for one by the auto-save effect below.
-      botEditedRef.current = false;
     });
   }
 
-  // A coin switch alone must never trigger a save: at the moment of switching,
-  // botSide/botIntervalSec/botAmount still hold the PREVIOUS coin's values (state
-  // hasn't been reset), so autosaving here would write stale values onto the new
-  // coin. Clearing the flag synchronously (before the debounce effect below can
-  // run on this same render) closes that race; refreshBotStatus repopulates the
-  // form for the new coin right after.
-  useEffect(() => {
-    botEditedRef.current = false;
-  }, [coinId]);
-
-  // Editing a field on this coin's page IS the act of targeting the bot at this
-  // coin — there is no separate "Сохранить" step. Debounced so rapid typing
-  // doesn't fire a request per keystroke. coinId is intentionally NOT a
-  // dependency: it's only read via closure when a real field edit fires this
-  // effect, so a bare coin switch (with no field edit) never triggers a save.
-  useEffect(() => {
-    if (!botEditedRef.current) return;
-    const intervalMs = Math.round(Number(botIntervalSec) * 1000);
+  // Configure + start in one explicit action — no separate save step. Only
+  // reachable from state 2 (bot not active on this coin), so this always
+  // (re)targets the bot at the current coinId.
+  async function launchBot() {
     const amt = Number(botAmount);
-    if (!intervalMs || !amt) return;
-    const timer = setTimeout(async () => {
-      setBotBusy(true);
-      setBotMessage(null);
-      try {
-        await api.configureBot(coinId, botSide, intervalMs, amt);
-        setBotMessage('Настройки сохранены');
-        refreshBotStatus();
-      } catch (e: any) {
-        setBotMessage(e.message ?? 'Ошибка настройки');
-      } finally {
-        setBotBusy(false);
-      }
-    }, 800);
-    return () => clearTimeout(timer);
-  }, [botSide, botIntervalSec, botAmount]);
-
-  async function toggleBot() {
-    if (!botStatus?.config) return;
+    if (!amt || amt <= 0) {
+      setBotAmountError('Введите сумму сделки');
+      return;
+    }
+    setBotAmountError(null);
     setBotBusy(true);
     setBotMessage(null);
     try {
-      await api.toggleBot(!botStatus.config.enabled);
+      await api.configureBot(coinId, botSide, botIntervalSec * 1000, amt);
+      await api.toggleBot(true);
+      setBotExpanded(false);
+      refreshBotStatus();
+    } catch (e: any) {
+      setBotMessage(e.message ?? 'Ошибка запуска бота');
+    } finally {
+      setBotBusy(false);
+    }
+  }
+
+  async function stopBot() {
+    setBotBusy(true);
+    setBotMessage(null);
+    try {
+      await api.toggleBot(false);
+      setBotExpanded(false);
       refreshBotStatus();
     } catch (e: any) {
       setBotMessage(e.message ?? 'Ошибка');
@@ -318,6 +313,12 @@ export function CoinDetailScreen() {
     }
   }
 
+  // The bot's own config/amount unit mirrors the main form's convention:
+  // USDD for a buy bot, coin quantity for a sell bot.
+  const botActiveHere = !!(botStatus?.config?.coinId === coinId && botStatus.config.enabled);
+  const botContentOpen = botActiveHere || botExpanded;
+  const botAvailable = botSide === 'buy' ? balance : (holding?.amount ?? 0);
+
   return (
     <div className="px-4 pt-4">
       <button onClick={() => navigate(-1)} className="mb-3 text-sm text-muted hover:text-white">← Назад</button>
@@ -459,64 +460,114 @@ export function CoinDetailScreen() {
         <div className="mt-4 rounded-2xl border border-border bg-card p-4">
           <button
             type="button"
-            onClick={() => setBotExpanded(v => !v)}
+            onClick={() => { if (!botActiveHere) setBotExpanded(v => !v); }}
             className="flex w-full items-center justify-between gap-2 text-sm font-semibold"
           >
             <span className="flex items-center gap-2">
-              <BotIcon className="h-4 w-4" />
+              <BotIcon className="h-4 w-4 text-muted" />
               Торговый бот
+              {botActiveHere && (
+                <span className="rounded-full border border-positive px-2 py-0.5 text-xs font-medium text-positive">
+                  активен
+                </span>
+              )}
             </span>
-            <ChevronIcon className={`h-4 w-4 text-muted transition-transform ${botExpanded ? 'rotate-90' : ''}`} />
+            <ChevronIcon className={`h-4 w-4 text-muted transition-transform ${botContentOpen ? 'rotate-90' : ''}`} />
           </button>
 
-          {botExpanded && (
+          {botContentOpen && (
             <div className="mt-3">
-              <div className="mb-3 flex gap-2">
-                <button
-                  onClick={() => { botEditedRef.current = true; setBotSide('buy'); }}
-                  className={`flex-1 rounded-xl py-2 text-sm font-semibold transition-colors ${botSide === 'buy' ? 'bg-positive/20 text-positive' : 'text-muted'}`}
-                >
-                  Покупать
-                </button>
-                <button
-                  onClick={() => { botEditedRef.current = true; setBotSide('sell'); }}
-                  className={`flex-1 rounded-xl py-2 text-sm font-semibold transition-colors ${botSide === 'sell' ? 'bg-negative/20 text-negative' : 'text-muted'}`}
-                >
-                  Продавать
-                </button>
-              </div>
+              {botActiveHere && botStatus.config ? (
+                <>
+                  <div className="flex items-center gap-2 rounded-xl bg-card-light p-3 text-sm">
+                    <span className="h-2 w-2 shrink-0 rounded-full bg-positive" />
+                    <span className="font-semibold">Бот активен</span>
+                    <span className="ml-auto shrink-0 text-xs text-muted">
+                      {botStatus.config.side === 'buy' ? 'Покупка' : 'Продажа'} · {botIntervalLabel(botStatus.config.intervalMs)}
+                    </span>
+                  </div>
 
-              <div className="mb-2 text-xs text-muted">Интервал, секунд</div>
-              <input
-                type="text"
-                inputMode="decimal"
-                value={botIntervalSec}
-                onChange={e => { botEditedRef.current = true; setBotIntervalSec(e.target.value.replace(/[^\d.]/g, '')); }}
-                className="w-full rounded-xl border border-border bg-bg px-3 py-2.5 text-lg text-white outline-none focus:border-accent-to"
-              />
+                  <div className="mt-2 grid grid-cols-2 gap-2.5">
+                    <div className="rounded-lg bg-card-light p-3">
+                      <div className="text-xs text-muted">Сумма сделок</div>
+                      <div className="text-base font-medium text-white">{formatUsdd(botStatus.config.runTotalUsdd)}</div>
+                    </div>
+                    <div className="rounded-lg bg-card-light p-3">
+                      <div className="text-xs text-muted">
+                        {botStatus.config.side === 'buy' ? 'Выкуплено монет' : 'Продано монет'}
+                      </div>
+                      <div className="text-base font-medium text-white">
+                        {formatQtyCompact(botStatus.config.runTotalCoins, livePrice)} {coin?.symbol ?? ''}
+                      </div>
+                    </div>
+                  </div>
 
-              <div className="mb-2 mt-3 text-xs text-muted">
-                {botSide === 'buy' ? 'Сумма в USDD за сделку' : `Количество ${coin?.symbol ?? ''} за сделку`}
-              </div>
-              <input
-                type="text"
-                inputMode="decimal"
-                value={formatAmountInput(botAmount)}
-                onChange={e => { botEditedRef.current = true; setBotAmount(parseAmountInput(e.target.value)); }}
-                placeholder="0.00"
-                className="w-full rounded-xl border border-border bg-bg px-3 py-2.5 text-lg text-white outline-none placeholder:text-muted focus:border-accent-to"
-              />
+                  <button
+                    onClick={stopBot}
+                    disabled={botBusy}
+                    className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-negative py-2.5 text-sm font-semibold text-negative disabled:opacity-40"
+                  >
+                    <StopIcon className="h-4 w-4" />
+                    Остановить бота
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div className="mb-3 flex gap-2">
+                    <button
+                      onClick={() => setBotSide('buy')}
+                      className={`flex-1 rounded-xl py-2 text-sm font-semibold transition-colors ${botSide === 'buy' ? 'bg-positive text-[#04342C]' : 'text-muted'}`}
+                    >
+                      Покупать
+                    </button>
+                    <button
+                      onClick={() => setBotSide('sell')}
+                      className={`flex-1 rounded-xl py-2 text-sm font-semibold transition-colors ${botSide === 'sell' ? 'bg-negative text-[#4A1315]' : 'text-muted'}`}
+                    >
+                      Продавать
+                    </button>
+                  </div>
 
-              {botStatus.config?.coinId === coinId && (
-                <button
-                  onClick={toggleBot}
-                  disabled={botBusy}
-                  className={`mt-4 w-full rounded-xl py-2 text-sm font-semibold text-white transition-colors disabled:opacity-40 ${
-                    botStatus.config.enabled ? 'bg-negative' : 'bg-positive'
-                  }`}
-                >
-                  {botStatus.config.enabled ? 'Отключить' : 'Включить'}
-                </button>
+                  <div className="mb-2 text-xs text-muted">Интервал между сделками</div>
+                  <div className="grid grid-cols-5 gap-1.5">
+                    {BOT_INTERVAL_PRESETS_SEC.map(sec => (
+                      <button
+                        key={sec}
+                        type="button"
+                        onClick={() => setBotIntervalSec(sec)}
+                        className={`rounded-lg py-2 text-xs font-semibold transition-colors ${
+                          botIntervalSec === sec ? 'bg-accent-to text-white' : 'border border-border text-muted hover:text-white'
+                        }`}
+                      >
+                        {BOT_INTERVAL_PRESET_LABELS[sec]}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="mb-2 mt-3 flex items-center justify-between text-xs text-muted">
+                    <span>Сумма за сделку</span>
+                    <span>
+                      Доступно: {botSide === 'buy' ? formatUsdd(botAvailable) : `${formatQtyCompact(botAvailable, livePrice)} ${coin?.symbol ?? ''}`}
+                    </span>
+                  </div>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={formatAmountInput(botAmount)}
+                    onChange={e => { setBotAmount(parseAmountInput(e.target.value)); setBotAmountError(null); }}
+                    placeholder="0.00"
+                    className="w-full rounded-xl border border-border bg-bg px-3 py-2.5 text-lg text-white outline-none placeholder:text-muted focus:border-accent-to"
+                  />
+                  {botAmountError && <div className="mt-1 text-[13px] text-negative">{botAmountError}</div>}
+
+                  <button
+                    onClick={launchBot}
+                    disabled={botBusy}
+                    className="mt-4 w-full rounded-xl bg-accent-gradient py-3 font-semibold shadow-glow disabled:opacity-40"
+                  >
+                    Запустить бота
+                  </button>
+                </>
               )}
 
               {botMessage && <div className="mt-2 text-center text-xs text-muted">{botMessage}</div>}

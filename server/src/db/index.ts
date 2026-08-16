@@ -89,6 +89,15 @@ export async function initDb() {
       next_run_at TIMESTAMPTZ
     );
 
+    -- Accumulated trade volume/coin quantity since the CURRENT run started
+    -- (reset to 0 every time the bot transitions off -> on — see
+    -- setTradingBotEnabled) — shown live on the coin screen while the bot is
+    -- active. Added via ALTER rather than the CREATE TABLE above so this is
+    -- safe to run against an already-deployed trading_bots table (CREATE
+    -- TABLE IF NOT EXISTS is a no-op there; ADD COLUMN IF NOT EXISTS is not).
+    ALTER TABLE trading_bots ADD COLUMN IF NOT EXISTS run_total_usdd DOUBLE PRECISION NOT NULL DEFAULT 0;
+    ALTER TABLE trading_bots ADD COLUMN IF NOT EXISTS run_total_coins DOUBLE PRECISION NOT NULL DEFAULT 0;
+
     -- Tracks the highest league/rank index a player has EVER reached, so the
     -- one-time rank-up bonus (config/ranks.ts RANK_UP_REWARDS) can never be
     -- farmed by oscillating net worth back and forth across a rank boundary —
