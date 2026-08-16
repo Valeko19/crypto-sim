@@ -82,43 +82,39 @@ export function MarketScreen() {
 
       {status && <FearGreedBar index={status.fearGreedIndex} label={status.fearGreedLabel} />}
 
-      <div className="mt-6 space-y-6">
-        {SECTION_ORDER.map(section => (
-          <div key={section} className="overflow-hidden rounded-2xl border border-border bg-card">
-            {bySection[section].map((coin, i, arr) => {
-              const l = live.prices[coin.id];
-              const price = l?.price ?? coin.price;
-              const change = l?.changePct ?? coin.changePct;
-              const capPrice = capPrices[coin.id]?.price ?? coin.price;
-              return (
-                <button
-                  key={coin.id}
-                  onClick={() => navigate(`/market/${coin.id}`)}
-                  className={`flex w-full items-center gap-3 py-[11px] px-[14px] text-left transition-colors hover:bg-card-light ${
-                    i < arr.length - 1 ? 'border-b border-card-light' : ''
-                  }`}
-                >
-                  <CoinAvatar coinId={coin.id} symbol={coin.symbol} iconUrl={coin.iconUrl} size={46} />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-baseline gap-2" style={{ lineHeight: 1.3 }}>
-                      <span className="text-[15px] font-semibold">{coin.symbol}</span>
-                      <span className="truncate text-[12.5px] text-muted">{coin.name}</span>
-                    </div>
-                    <div className="mt-0.5 text-[11px] text-[#6B7290]" style={{ lineHeight: 1.4 }}>
-                      MCap ${formatCompact(capPrice * coin.supply)} · Supply {formatCompact(coin.supply)}
-                    </div>
-                  </div>
-                  <div className="shrink-0 text-right">
-                    <div className="text-[15px] font-semibold" style={{ lineHeight: 1.3 }}>${formatPrice(price)}</div>
-                    <div className={`mt-0.5 text-[12.5px] ${pctColorClass(change)}`} style={{ lineHeight: 1.4 }}>
-                      {formatPct(change)}
-                    </div>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        ))}
+      <div className="mt-6 overflow-hidden rounded-2xl border border-border bg-card">
+        {SECTION_ORDER.flatMap(section => bySection[section]).map((coin, i, arr) => {
+          const l = live.prices[coin.id];
+          const price = l?.price ?? coin.price;
+          const change = l?.changePct ?? coin.changePct;
+          const capPrice = capPrices[coin.id]?.price ?? coin.price;
+          return (
+            <button
+              key={coin.id}
+              onClick={() => navigate(`/market/${coin.id}`)}
+              className={`flex w-full items-center gap-3 py-[11px] px-[14px] text-left transition-colors hover:bg-card-light ${
+                i < arr.length - 1 ? 'border-b border-card-light' : ''
+              }`}
+            >
+              <CoinAvatar coinId={coin.id} symbol={coin.symbol} iconUrl={coin.iconUrl} size={46} />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-baseline gap-2" style={{ lineHeight: 1.3 }}>
+                  <span className="text-[15px] font-semibold">{coin.symbol}</span>
+                  <span className="truncate text-[12.5px] text-muted">{coin.name}</span>
+                </div>
+                <div className="mt-0.5 text-[11px] text-[#6B7290]" style={{ lineHeight: 1.4 }}>
+                  MCap ${formatCompact(capPrice * coin.supply)} · Supply {formatCompact(coin.supply)}
+                </div>
+              </div>
+              <div className="shrink-0 text-right">
+                <div className="text-[15px] font-semibold" style={{ lineHeight: 1.3 }}>${formatPrice(price)}</div>
+                <div className={`mt-0.5 text-[12.5px] ${pctColorClass(change)}`} style={{ lineHeight: 1.4 }}>
+                  {formatPct(change)}
+                </div>
+              </div>
+            </button>
+          );
+        })}
       </div>
     </div>
   );
