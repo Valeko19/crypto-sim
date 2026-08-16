@@ -61,7 +61,7 @@ export function CoinDetailScreen() {
   const [botExpanded, setBotExpanded] = useState(false);
   const [botStatus, setBotStatus] = useState<TradingBotStatus | null>(null);
   const [botSide, setBotSide] = useState<'buy' | 'sell'>('buy');
-  const [botIntervalSec, setBotIntervalSec] = useState(5);
+  const [botIntervalSec, setBotIntervalSec] = useState(1);
   const [botAmount, setBotAmount] = useState('');
   const [botAmountError, setBotAmountError] = useState<string | null>(null);
   const [botBusy, setBotBusy] = useState(false);
@@ -116,7 +116,10 @@ export function CoinDetailScreen() {
     try {
       await api.configureBot(coinId, botSide, botIntervalSec * 1000, amt);
       await api.toggleBot(true);
-      setBotExpanded(false);
+      // botActiveHere takes over display once this resolves, but leaving
+      // botExpanded exactly as it was (true — this action only reachable
+      // from the open state 2) means a LATER stop, in this same mount,
+      // correctly keeps the block open instead of collapsing it.
       refreshBotStatus();
     } catch (e: any) {
       setBotMessage(e.message ?? 'Ошибка запуска бота');
@@ -125,12 +128,16 @@ export function CoinDetailScreen() {
     }
   }
 
+  // Deliberately does NOT collapse the block (state 2 stays open, with the
+  // just-used settings still showing) — it only goes back to collapsed the
+  // next time this screen mounts fresh (see botExpanded's own default and
+  // the module comment on this screen staying mounted across coinId changes
+  // but NOT across navigating to a different tab/route).
   async function stopBot() {
     setBotBusy(true);
     setBotMessage(null);
     try {
       await api.toggleBot(false);
-      setBotExpanded(false);
       refreshBotStatus();
     } catch (e: any) {
       setBotMessage(e.message ?? 'Ошибка');
@@ -138,6 +145,16 @@ export function CoinDetailScreen() {
       setBotBusy(false);
     }
   }
+
+  // Keeps state 3's metrics fresh at a fixed 1s cadence independent of the
+  // bot's own trade interval (which can be as slow as 1m) — the player
+  // shouldn't have to wait out a full cycle to see the numbers move.
+  useEffect(() => {
+    const active = botStatus?.config?.coinId === coinId && botStatus.config.enabled;
+    if (!active) return;
+    const interval = setInterval(refreshBotStatus, 1000);
+    return () => clearInterval(interval);
+  }, [botStatus?.config?.coinId, botStatus?.config?.enabled, coinId]);
 
   // Chart setup (once)
   useEffect(() => {
