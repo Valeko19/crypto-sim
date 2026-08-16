@@ -63,7 +63,7 @@ async function executeTradeUnlocked(state: EngineState, playerId: string, params
     const executedFraction = netIn > 0 ? result.usddAmount / netIn : 1;
     const actualFee = fee * executedFraction;
     const totalCharged = result.usddAmount + actualFee;
-    await applyBuy(playerId, coinId, result.coinAmount, totalCharged, result.avgPrice);
+    await applyBuy(playerId, coinId, result.coinAmount, totalCharged, result.avgPrice, actualFee);
     cs.playerOwnedCoins += result.coinAmount;
     recordTradeVolume(playerId, totalCharged);
     return { ...result, fee: actualFee };

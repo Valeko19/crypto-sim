@@ -9,6 +9,7 @@ export interface PlayerRow {
   trades_count: number;
   total_volume: number;
   realized_pnl: number;
+  total_fees_paid: number;
 }
 
 export interface HoldingRow {
@@ -77,7 +78,8 @@ export async function applyBuy(
   coinId: string,
   coinAmount: number,
   usddSpent: number,
-  execPrice: number
+  execPrice: number,
+  feeAmount: number
 ): Promise<void> {
   const existing = await getHolding(playerId, coinId);
   if (existing) {
@@ -95,8 +97,8 @@ export async function applyBuy(
   }
   await db.query(
     `UPDATE players SET usdd_balance = usdd_balance - $1, trades_count = trades_count + 1,
-     total_volume = total_volume + $1 WHERE id = $2`,
-    [usddSpent, playerId]
+     total_volume = total_volume + $1, total_fees_paid = total_fees_paid + $3 WHERE id = $2`,
+    [usddSpent, playerId, feeAmount]
   );
 }
 
@@ -105,7 +107,8 @@ export async function applySell(
   coinId: string,
   coinAmount: number,
   usddReceived: number,
-  execPrice: number
+  execPrice: number,
+  feeAmount: number
 ): Promise<void> {
   const existing = await getHolding(playerId, coinId);
   if (!existing) throw new Error('No holding to sell');
@@ -121,8 +124,9 @@ export async function applySell(
   }
   await db.query(
     `UPDATE players SET usdd_balance = usdd_balance + $1, trades_count = trades_count + 1,
-     total_volume = total_volume + $1, realized_pnl = realized_pnl + $2 WHERE id = $3`,
-    [usddReceived, realizedPnl, playerId]
+     total_volume = total_volume + $1, realized_pnl = realized_pnl + $2, total_fees_paid = total_fees_paid + $4
+     WHERE id = $3`,
+    [usddReceived, realizedPnl, playerId, feeAmount]
   );
 }
 

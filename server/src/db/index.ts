@@ -26,6 +26,12 @@ export async function initDb() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
 
+    -- Added via ALTER rather than the CREATE TABLE above so this is safe to
+    -- run against an already-deployed players table (CREATE TABLE IF NOT
+    -- EXISTS is a no-op there; ADD COLUMN IF NOT EXISTS is not) — same
+    -- reasoning as trading_bots' run_total_* columns.
+    ALTER TABLE players ADD COLUMN IF NOT EXISTS total_fees_paid DOUBLE PRECISION NOT NULL DEFAULT 0;
+
     CREATE TABLE IF NOT EXISTS player_holdings (
       player_id TEXT NOT NULL REFERENCES players(id),
       coin_id TEXT NOT NULL,
