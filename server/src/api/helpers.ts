@@ -30,6 +30,7 @@ export interface PortfolioView {
   tradesCount: number;
   totalVolume: number;
   realizedPnl: number;
+  totalFeesPaid: number;
   username: string;
 }
 
@@ -66,6 +67,7 @@ function buildPortfolioView(state: EngineState, player: PlayerRow, holdingRows: 
     tradesCount: player.trades_count,
     totalVolume: player.total_volume,
     realizedPnl: player.realized_pnl,
+    totalFeesPaid: player.total_fees_paid,
     username: player.username,
   };
 }
