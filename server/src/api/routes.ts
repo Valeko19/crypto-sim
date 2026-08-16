@@ -3,7 +3,7 @@ import { EngineState, recentChangePct } from '../engine/state.js';
 import { price } from '../engine/amm.js';
 import { quoteBuy, quoteSell } from '../engine/amm.js';
 import { executeTrade, TradeError } from '../engine/trade.js';
-import { forcePhase, fearGreedLabel, phaseProgress } from '../engine/tick.js';
+import { forcePhase, fearGreedLabel, phaseProgress, tick } from '../engine/tick.js';
 import { justifiedPrice } from '../engine/gravity.js';
 import { aggregateCandles, isChartTimeframe } from '../engine/candleAggregate.js';
 import { triggerNewsEvent } from '../engine/news.js';
@@ -509,6 +509,98 @@ export function createRouter(state: EngineState) {
       macroPhaseDriftPctPerMin: state.macroPhaseDriftPctPerMin,
       coins: breakdown,
     });
+  });
+
+  // Runs the simulation forward synchronously instead of at the real
+  // 1-tick/second pace — tick() is pure in-memory math (see engine/tick.ts),
+  // so a tight loop of it is cheap and lets pre-beta test scripts observe
+  // hours of simulated market behavior (macro phases, gravity, drift) in a
+  // couple of seconds instead of actually waiting real wall-clock hours.
+  // Bypasses the normal per-tick WS broadcast entirely — connected dev
+  // clients just see time jump when this returns. Same "safe dev
+  // environment" gate as the routes above.
+  router.post('/debug/fast-forward', (req, res) => {
+    if (!DEV_AUTH_ALLOWED) return res.status(403).json({ error: 'not available' });
+    const ticks = Math.min(Math.max(Math.floor(Number(req.body?.ticks) || 0), 0), 300_000);
+
+    const priceStats: Record<string, { min: number; max: number }> = {};
+    for (const cfg of COINS) {
+      const p = price(state.coins[cfg.id].pool);
+      priceStats[cfg.id] = { min: p, max: p };
+    }
+    // Records BTCR's price at the start of every macro phase encountered
+    // during the loop (including the phase already active when it started),
+    // so a caller can derive each individual phase's actual % move in one
+    // pass instead of polling between forced phase changes.
+    const phaseLog: { phase: MacroPhase; atTick: number; btcrPrice: number }[] = [
+      { phase: state.macroPhase, atTick: state.tickCount, btcrPrice: price(state.coins['btcr'].pool) },
+    ];
+    for (let i = 0; i < ticks; i++) {
+      tick(state);
+      for (const cfg of COINS) {
+        const p = price(state.coins[cfg.id].pool);
+        const s = priceStats[cfg.id];
+        if (p < s.min) s.min = p;
+        if (p > s.max) s.max = p;
+      }
+      if (state.macroPhase !== phaseLog[phaseLog.length - 1].phase) {
+        phaseLog.push({ phase: state.macroPhase, atTick: state.tickCount, btcrPrice: price(state.coins['btcr'].pool) });
+      }
+    }
+    res.json({ ticksRun: ticks, tickCount: state.tickCount, macroPhase: state.macroPhase, priceStats, phaseLog });
+  });
+
+  // Raw pool reserves — lets a test independently re-derive the
+  // constant-product math (x*y=k) by hand instead of trusting the same
+  // engine code that's under test. Also exposes playerOwnedCoins (see
+  // restore-pools below) — it isn't part of the AMM pool itself, but it's
+  // exactly the other piece of per-coin state a real trade mutates, and
+  // gravity.ts's justifiedPrice() anchors hard on it (a squared ratio term),
+  // so restoring reserves without it leaves the coin's long-horizon price
+  // target badly skewed even though the pool itself looks back to normal.
+  router.get('/debug/pool/:id', (req, res) => {
+    if (!DEV_AUTH_ALLOWED) return res.status(403).json({ error: 'not available' });
+    const cs = state.coins[req.params.id];
+    if (!cs) return res.status(404).json({ error: 'coin not found' });
+    res.json({ coinReserve: cs.pool.coinReserve, usddReserve: cs.pool.usddReserve, playerOwnedCoins: cs.playerOwnedCoins });
+  });
+
+  // Lets a test snapshot pool reserves (+ playerOwnedCoins) before a real
+  // market-moving sequence (a /debug/fast-forward run, or a large buy/sell
+  // pair) and put them back afterward, so observing "hours" of unattended
+  // drift — or a large simulated buyer — doesn't PERMANENTLY move prices for
+  // every other dev/QA session against this same server (pool reserves are
+  // snapshotted to disk every 10s and resumed on restart — without this,
+  // each test run would leave a one-way-ratcheting mark on the shared dev
+  // market).
+  router.post('/debug/restore-pools', (req, res) => {
+    if (!DEV_AUTH_ALLOWED) return res.status(403).json({ error: 'not available' });
+    const pools = req.body?.pools as Record<string, { coinReserve: number; usddReserve: number; playerOwnedCoins?: number }> | undefined;
+    if (!pools) return res.status(400).json({ error: 'missing pools' });
+    for (const [coinId, reserves] of Object.entries(pools)) {
+      const cs = state.coins[coinId];
+      if (!cs || !reserves) continue;
+      cs.pool.coinReserve = reserves.coinReserve;
+      cs.pool.usddReserve = reserves.usddReserve;
+      if (reserves.playerOwnedCoins != null) cs.playerOwnedCoins = reserves.playerOwnedCoins;
+    }
+    res.json({ success: true });
+  });
+
+  // Credits the calling dev player directly, bypassing the shop/daily-limit
+  // entirely, so market-moving tests (large emission capture, concurrent
+  // trade races, etc.) can fund a test account without needing a realistic
+  // in-game way to earn that much USDD first.
+  router.post('/debug/grant-balance', async (req, res) => {
+    if (!DEV_AUTH_ALLOWED) return res.status(403).json({ error: 'not available' });
+    const amount = Number(req.body?.amount);
+    if (!amount || amount <= 0) return res.status(400).json({ error: 'invalid amount' });
+    const { db } = await import('../db/index.js');
+    const result = await db.query<{ usdd_balance: number }>(
+      'UPDATE players SET usdd_balance = usdd_balance + $1 WHERE id = $2 RETURNING usdd_balance',
+      [amount, req.playerId]
+    );
+    res.json({ success: true, newBalance: result.rows[0]?.usdd_balance ?? null });
   });
 
   return router;

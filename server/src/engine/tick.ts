@@ -17,6 +17,14 @@ const LIVELINESS_CAP = 2.5;
 // flip sign is significantly damped by the time 5 of them sum into one candle.
 // This value is picked to still produce visible reversal CANDLES (not just ticks).
 const RELATIVE_NOISE_FACTOR = 11;
+// Array#shift() is O(n) — negligible at the real cadence (once per candle
+// close, i.e. every CANDLE_INTERVAL_MS), but adds up badly under
+// /debug/fast-forward's tight synchronous tick loop (see api/routes.ts),
+// which can replay tens of thousands of candle closes per coin in one call.
+// Letting the array overshoot MAX_CANDLES by this many entries before
+// trimming it back down in one batched slice() amortizes that cost across
+// many pushes instead of paying it on every single one.
+const CANDLE_TRIM_BATCH = 200;
 
 // --- Sub-candle texture ---------------------------------------------------
 // The mode machine above gives the phase its large-scale structure (trend
@@ -376,7 +384,7 @@ function updateCandle(cs: CoinState, state: EngineState) {
       cs.sameColorStreak = closedColor === cs.lastCandleColor ? cs.sameColorStreak + 1 : 1;
       cs.lastCandleColor = closedColor;
       cs.candles.push(cs.currentCandle);
-      if (cs.candles.length > MAX_CANDLES) cs.candles.shift();
+      if (cs.candles.length > MAX_CANDLES + CANDLE_TRIM_BATCH) cs.candles = cs.candles.slice(-MAX_CANDLES);
     }
     cs.currentCandle = { t: bucketStart, o: openPrice, h: Math.max(openPrice, p), l: Math.min(openPrice, p), c: p };
   } else {
@@ -396,7 +404,16 @@ function updateRecentHistory(cs: CoinState, now: number) {
 }
 
 export function tick(state: EngineState) {
-  const now = Date.now();
+  // Simulated wall-clock position, not the real Date.now() — matches how
+  // updateCandle already buckets by tickCount instead of real time (same
+  // rationale: stays exactly uniform regardless of a tick's real firing
+  // jitter). Critically, this also keeps recentHistory/fiveMinHistory's
+  // rolling-window trims correct under POST /debug/fast-forward (see
+  // api/routes.ts), which replays many ticks in a tight synchronous loop —
+  // real time barely advances across that loop, so a literal Date.now() would
+  // make the trim's cutoff stay ~constant and the "recent" arrays would grow
+  // unbounded for the whole fast-forwarded window instead of staying capped.
+  const now = state.engineStartMs + state.tickCount * TICK_MS;
   maybeAdvanceMacroPhase(state);
   updateMacroMode(state);
   maybeTriggerNews(state);
