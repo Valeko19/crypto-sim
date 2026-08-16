@@ -6,15 +6,6 @@ import { LivePriceInfo } from '../lib/wsStore';
 import { CoinAvatar } from '../components/CoinAvatar';
 import { FearGreedBar } from '../components/FearGreedBar';
 import { formatCompact, formatPrice, formatPct, pctColorClass, formatDurationShort } from '../lib/format';
-import { SHOW_DEBUG_PHASE } from '../config';
-
-const DEBUG_PHASES: { label: string; phase: string }[] = [
-  { label: 'Бычий', phase: 'bull' },
-  { label: 'Распределение', phase: 'euphoria' },
-  { label: 'Медвежий', phase: 'bear' },
-  { label: 'Зима', phase: 'accumulation' },
-  { label: 'Восстановление', phase: 'early_bull' },
-];
 
 const SECTION_LABEL: Record<string, string> = { top1: 'Топ 1', alt: 'Альткоины', meme: 'Мемкоины' };
 const SECTION_ORDER = ['top1', 'alt', 'meme'];
@@ -91,26 +82,6 @@ export function MarketScreen() {
       </div>
 
       {status && <FearGreedBar index={status.fearGreedIndex} label={status.fearGreedLabel} />}
-
-      {SHOW_DEBUG_PHASE && (
-        <div className="mt-4 flex flex-wrap gap-2">
-          {DEBUG_PHASES.map(d => (
-            // Read-only phase indicator — NOT a control. Must never call
-            // anything that mutates market state (see server/src/api/routes.ts
-            // /debug/phase, which is itself gated off in production regardless).
-            <span
-              key={d.phase}
-              className={`cursor-default select-none rounded-full border px-3 py-1.5 text-xs ${
-                status?.phase === d.phase
-                  ? 'border-transparent bg-accent-gradient text-white'
-                  : 'border-border text-muted'
-              }`}
-            >
-              {d.label}
-            </span>
-          ))}
-        </div>
-      )}
 
       <div className="mt-6 space-y-6">
         {SECTION_ORDER.map(section => (

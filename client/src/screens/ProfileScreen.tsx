@@ -3,9 +3,9 @@ import { Link } from 'react-router-dom';
 import { api, PortfolioView } from '../lib/api';
 import { useMarketSocket } from '../hooks/useMarketSocket';
 import { CoinAvatar } from '../components/CoinAvatar';
-import { formatUsdd, formatPct, pctColorClass, formatQty } from '../lib/format';
+import { formatUsdd, formatPct, formatPctPlain, pctColorClass, formatQtyCompact } from '../lib/format';
 import { rankEmoji } from '../lib/rankVisuals';
-import { ShareIcon } from '../components/icons';
+import { ShareIcon, ChevronIcon } from '../components/icons';
 
 export function ProfileScreen() {
   const [portfolio, setPortfolio] = useState<PortfolioView | null>(null);
@@ -65,7 +65,10 @@ export function ProfileScreen() {
           <div className="text-sm text-muted">Ранг: {rankEmoji(current.rank)} {current.rank}</div>
         </div>
         <Link to="/leaderboard" className="text-right transition-opacity hover:opacity-80">
-          <div className="rounded-full bg-card-light px-3 py-1 text-xs font-medium">{rankEmoji(current.league)} Лига {current.league}</div>
+          <div className="inline-flex items-center gap-1 rounded-full border border-accent-to bg-card-light px-3 py-1 text-xs font-medium text-accent-to">
+            {rankEmoji(current.league)} Лига {current.league}
+            <ChevronIcon className="h-3 w-3" />
+          </div>
           {leaguePlace != null && <div className="mt-1 text-xs text-muted">#{leaguePlace} в лиге</div>}
         </Link>
       </div>
@@ -93,7 +96,7 @@ export function ProfileScreen() {
               <div className="min-w-0 flex-1">
                 <div className="font-semibold">{row.holding.symbol}</div>
                 <div className="truncate text-xs text-muted">
-                  {formatQty(row.holding.amount, row.holding.currentPrice)} монет · {row.holding.pctEmission.toFixed(3)}% эмиссии
+                  {formatQtyCompact(row.holding.amount, row.holding.currentPrice)} монет · {formatPctPlain(row.holding.pctEmission)} эмиссии
                 </div>
               </div>
               <div className="shrink-0 text-right">
@@ -105,10 +108,20 @@ export function ProfileScreen() {
         )}
       </div>
 
-      <p className="mt-3 text-sm text-muted">
-        Сделок: {current.tradesCount} · Объём: {formatUsdd(current.totalVolume)} · Реализ. P&L:{' '}
-        <span className={pctColorClass(current.realizedPnl)}>{formatUsdd(current.realizedPnl)}</span>
-      </p>
+      <div className="mt-3 grid grid-cols-2 gap-2.5">
+        <div className="rounded-lg bg-card p-3">
+          <div className="text-xs text-muted">Сделок</div>
+          <div className="text-base font-medium text-white">{current.tradesCount}</div>
+        </div>
+        <div className="rounded-lg bg-card p-3">
+          <div className="text-xs text-muted">Объём</div>
+          <div className="text-base font-medium text-white">{formatUsdd(current.totalVolume)}</div>
+        </div>
+        <div className="col-span-2 rounded-lg bg-card p-3">
+          <div className="text-xs text-muted">Реализ. P&L</div>
+          <div className={`text-base font-medium ${pctColorClass(current.realizedPnl)}`}>{formatUsdd(current.realizedPnl)}</div>
+        </div>
+      </div>
 
       <button className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl border border-border bg-card py-3 text-sm text-muted hover:text-white">
         <ShareIcon className="h-5 w-5" />

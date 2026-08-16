@@ -1,9 +1,10 @@
 export function formatCompact(n: number): string {
+  if (n === 0) return '0';
   const abs = Math.abs(n);
-  if (abs >= 1e12) return (n / 1e12).toFixed(2) + 'T';
-  if (abs >= 1e9) return (n / 1e9).toFixed(2) + 'B';
-  if (abs >= 1e6) return (n / 1e6).toFixed(2) + 'M';
-  if (abs >= 1e3) return (n / 1e3).toFixed(2) + 'K';
+  if (abs >= 1e12) return (n / 1e12).toFixed(1) + 'T';
+  if (abs >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+  if (abs >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (abs >= 1e3) return (n / 1e3).toFixed(1) + 'K';
   return n.toFixed(0);
 }
 
@@ -20,6 +21,7 @@ export function formatPrice(n: number): string {
 }
 
 export function formatUsdd(n: number): string {
+  if (n === 0) return '$0';
   const sign = n < 0 ? '-' : '';
   return `${sign}$${Math.abs(n).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
@@ -27,6 +29,12 @@ export function formatUsdd(n: number): string {
 export function formatPct(n: number, digits = 1): string {
   const sign = n > 0 ? '+' : '';
   return `${sign}${n.toFixed(digits)}%`;
+}
+
+// Plain (unsigned, no +/-) percentage — e.g. "% of emission owned". Distinct
+// from formatPct, which is for signed price/PnL deltas and always shows a sign.
+export function formatPctPlain(n: number, digits = 1): string {
+  return `${n.toFixed(digits)}%`;
 }
 
 export function pctColorClass(n: number): string {
@@ -58,12 +66,25 @@ export function formatDurationLong(totalSec: number): string {
 // smaller quantities where extra fractional digits still carry real value,
 // cheap coins are held in bulk where they're just noise.
 export function formatQty(amount: number, price: number): string {
+  if (amount === 0) return '0';
   let decimals = 0;
   if (price > 10_000) decimals = 4;
   else if (price >= 1_000) decimals = 3;
   else if (price >= 100) decimals = 2;
   else if (price >= 10) decimals = 1;
   return amount.toLocaleString('ru-RU', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+}
+
+// Coin quantity, compact — same K/M/B/T suffixing as formatCompact for huge
+// balances (meme coins are commonly held in the hundreds of billions, where
+// formatQty's full digit count runs together into an unreadable/truncated
+// block), but falls back to formatQty's price-tier fractional precision below
+// 1000 so a real fractional holding of an expensive coin (e.g. 0.5 BTCR)
+// never rounds away to "0" or "1".
+export function formatQtyCompact(amount: number, price: number): string {
+  if (amount === 0) return '0';
+  if (Math.abs(amount) >= 1e3) return formatCompact(amount);
+  return formatQty(amount, price);
 }
 
 // Trade-amount text input: kept internally as a plain parseable numeric

@@ -5,8 +5,8 @@ import { api, CoinListItem, TradingBotStatus } from '../lib/api';
 import { useMarketSocket } from '../hooks/useMarketSocket';
 import { CoinAvatar } from '../components/CoinAvatar';
 import { NewsBanner } from '../components/NewsBanner';
-import { BotIcon } from '../components/icons';
-import { formatCompact, formatPrice, formatPct, formatUsdd, formatQty, parseAmountInput, formatAmountInput, pctColorClass, pricePrecision } from '../lib/format';
+import { BotIcon, ChevronIcon } from '../components/icons';
+import { formatCompact, formatPrice, formatPct, formatPctPlain, formatUsdd, formatQtyCompact, parseAmountInput, formatAmountInput, pctColorClass, pricePrecision } from '../lib/format';
 
 // borderVisible must stay on: quiet coins can have a near-zero-height body for
 // several candles in a row, and a fill with no stroke rounds down to nothing
@@ -46,6 +46,7 @@ export function CoinDetailScreen() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
+  const [botExpanded, setBotExpanded] = useState(false);
   const [botStatus, setBotStatus] = useState<TradingBotStatus | null>(null);
   const [botSide, setBotSide] = useState<'buy' | 'sell'>('buy');
   const [botIntervalSec, setBotIntervalSec] = useState('5');
@@ -229,12 +230,11 @@ export function CoinDetailScreen() {
     if (capPrice === 0 && livePrice > 0) setCapPrice(livePrice);
   }, [livePrice, capPrice]);
 
-  // 100% on the slider = full balance when buying, full holding when selling —
-  // expressed in whichever unit (USDD / coin quantity) the input is currently in.
+  // 100% (the quick-pct button) = full balance when buying, full holding when
+  // selling — expressed in whichever unit (USDD / coin quantity) is active.
   const available = side === 'buy'
     ? (mode === 'usdd' ? balance : (livePrice > 0 ? balance / livePrice : 0))
     : (mode === 'usdd' ? (holding?.amount ?? 0) * livePrice : (holding?.amount ?? 0));
-  const sliderPct = available > 0 ? Math.max(0, Math.min(100, ((Number(amount) || 0) / available) * 100)) : 0;
 
   function applyPct(pct: number) {
     const raw = available * (pct / 100);
@@ -348,7 +348,7 @@ export function CoinDetailScreen() {
       {holding && coin && (
         <div className="mt-3 rounded-2xl border border-border bg-card p-3 text-sm">
           <span className="text-muted">Позиция: </span>
-          {formatQty(holding.amount, livePrice)} {coin.symbol} · {holding.pctEmission.toFixed(3)}% эмиссии
+          {formatQtyCompact(holding.amount, livePrice)} {coin.symbol} · {formatPctPlain(holding.pctEmission)} эмиссии
         </div>
       )}
 
@@ -386,7 +386,7 @@ export function CoinDetailScreen() {
           value={formatAmountInput(amount)}
           onChange={handleAmountChange}
           placeholder="0.00"
-          className="w-full rounded-xl border border-border bg-bg px-3 py-2.5 text-lg outline-none focus:border-accent-to"
+          className="w-full rounded-xl border border-border bg-bg px-3 py-2.5 text-lg text-white outline-none placeholder:text-muted focus:border-accent-to"
         />
 
         <div className="mt-2 flex items-center justify-between text-xs text-muted">
@@ -396,27 +396,7 @@ export function CoinDetailScreen() {
           </span>
         </div>
 
-        <div className="mt-3">
-          <input
-            type="range"
-            min={0}
-            max={100}
-            step={1}
-            value={sliderPct}
-            onChange={e => applyPct(Number(e.target.value))}
-            disabled={available <= 0}
-            className="w-full accent-accent-to disabled:opacity-30"
-          />
-          <div className="mt-1 flex justify-between text-[10px] text-muted">
-            <span>0%</span>
-            <span>25%</span>
-            <span>50%</span>
-            <span>75%</span>
-            <span>100%</span>
-          </div>
-        </div>
-
-        <div className="mt-2 grid grid-cols-4 gap-2">
+        <div className="mt-3 grid grid-cols-4 gap-2">
           {[25, 50, 75, 100].map(pct => (
             <button
               key={pct}
@@ -434,7 +414,7 @@ export function CoinDetailScreen() {
           <div className="mt-3 rounded-xl bg-card-light p-3 text-xs text-muted">
             <div>Ожидаемая цена: ~${formatPrice(quote.avgPrice)}</div>
             <div className={Math.abs(quote.priceImpactPct) > 3 ? 'text-negative' : ''}>
-              Проскальзывание: {formatPct(quote.priceImpactPct, 2)}
+              Проскальзывание: {formatPct(quote.priceImpactPct)}
             </div>
             <div>Комиссия ({(quote.feePct * 100).toFixed(2).replace(/\.?0+$/, '')}%): {formatUsdd(quote.feeAmount)}</div>
             <div>Вы получите: {side === 'buy' ? `${quote.out.toFixed(6)} ${coin?.symbol ?? ''}` : formatUsdd(quote.out)}</div>
@@ -444,7 +424,9 @@ export function CoinDetailScreen() {
         <button
           onClick={submit}
           disabled={busy || !amount}
-          className="mt-4 w-full rounded-xl bg-accent-gradient py-3 font-semibold shadow-glow disabled:opacity-40"
+          className={`mt-4 w-full rounded-xl py-3 font-semibold disabled:opacity-40 ${
+            side === 'buy' ? 'bg-positive text-[#04342C] shadow-glow-green' : 'bg-negative text-[#4A1315] shadow-glow-red'
+          }`}
         >
           {side === 'buy' ? 'Купить' : 'Продать'}
         </button>
@@ -454,60 +436,71 @@ export function CoinDetailScreen() {
 
       {botStatus && (
         <div className="mt-4 rounded-2xl border border-border bg-card p-4">
-          <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
-            <BotIcon className="h-4 w-4" />
-            Торговый бот
-          </div>
+          <button
+            type="button"
+            onClick={() => setBotExpanded(v => !v)}
+            className="flex w-full items-center justify-between gap-2 text-sm font-semibold"
+          >
+            <span className="flex items-center gap-2">
+              <BotIcon className="h-4 w-4" />
+              Торговый бот
+            </span>
+            <ChevronIcon className={`h-4 w-4 text-muted transition-transform ${botExpanded ? 'rotate-90' : ''}`} />
+          </button>
 
-          <div className="mb-3 flex gap-2">
-            <button
-              onClick={() => { botEditedRef.current = true; setBotSide('buy'); }}
-              className={`flex-1 rounded-xl py-2 text-sm font-semibold transition-colors ${botSide === 'buy' ? 'bg-positive/20 text-positive' : 'text-muted'}`}
-            >
-              Покупать
-            </button>
-            <button
-              onClick={() => { botEditedRef.current = true; setBotSide('sell'); }}
-              className={`flex-1 rounded-xl py-2 text-sm font-semibold transition-colors ${botSide === 'sell' ? 'bg-negative/20 text-negative' : 'text-muted'}`}
-            >
-              Продавать
-            </button>
-          </div>
+          {botExpanded && (
+            <div className="mt-3">
+              <div className="mb-3 flex gap-2">
+                <button
+                  onClick={() => { botEditedRef.current = true; setBotSide('buy'); }}
+                  className={`flex-1 rounded-xl py-2 text-sm font-semibold transition-colors ${botSide === 'buy' ? 'bg-positive/20 text-positive' : 'text-muted'}`}
+                >
+                  Покупать
+                </button>
+                <button
+                  onClick={() => { botEditedRef.current = true; setBotSide('sell'); }}
+                  className={`flex-1 rounded-xl py-2 text-sm font-semibold transition-colors ${botSide === 'sell' ? 'bg-negative/20 text-negative' : 'text-muted'}`}
+                >
+                  Продавать
+                </button>
+              </div>
 
-          <div className="mb-2 text-xs text-muted">Интервал, секунд</div>
-          <input
-            type="text"
-            inputMode="decimal"
-            value={botIntervalSec}
-            onChange={e => { botEditedRef.current = true; setBotIntervalSec(e.target.value.replace(/[^\d.]/g, '')); }}
-            className="w-full rounded-xl border border-border bg-bg px-3 py-2.5 text-lg outline-none focus:border-accent-to"
-          />
+              <div className="mb-2 text-xs text-muted">Интервал, секунд</div>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={botIntervalSec}
+                onChange={e => { botEditedRef.current = true; setBotIntervalSec(e.target.value.replace(/[^\d.]/g, '')); }}
+                className="w-full rounded-xl border border-border bg-bg px-3 py-2.5 text-lg text-white outline-none focus:border-accent-to"
+              />
 
-          <div className="mb-2 mt-3 text-xs text-muted">
-            {botSide === 'buy' ? 'Сумма в USDD за сделку' : `Количество ${coin?.symbol ?? ''} за сделку`}
-          </div>
-          <input
-            type="text"
-            inputMode="decimal"
-            value={formatAmountInput(botAmount)}
-            onChange={e => { botEditedRef.current = true; setBotAmount(parseAmountInput(e.target.value)); }}
-            placeholder="0.00"
-            className="w-full rounded-xl border border-border bg-bg px-3 py-2.5 text-lg outline-none focus:border-accent-to"
-          />
+              <div className="mb-2 mt-3 text-xs text-muted">
+                {botSide === 'buy' ? 'Сумма в USDD за сделку' : `Количество ${coin?.symbol ?? ''} за сделку`}
+              </div>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={formatAmountInput(botAmount)}
+                onChange={e => { botEditedRef.current = true; setBotAmount(parseAmountInput(e.target.value)); }}
+                placeholder="0.00"
+                className="w-full rounded-xl border border-border bg-bg px-3 py-2.5 text-lg text-white outline-none placeholder:text-muted focus:border-accent-to"
+              />
 
-          {botStatus.config?.coinId === coinId && (
-            <button
-              onClick={toggleBot}
-              disabled={botBusy}
-              className={`mt-4 w-full rounded-xl py-2 text-sm font-semibold text-white transition-colors disabled:opacity-40 ${
-                botStatus.config.enabled ? 'bg-negative' : 'bg-positive'
-              }`}
-            >
-              {botStatus.config.enabled ? 'Отключить' : 'Включить'}
-            </button>
+              {botStatus.config?.coinId === coinId && (
+                <button
+                  onClick={toggleBot}
+                  disabled={botBusy}
+                  className={`mt-4 w-full rounded-xl py-2 text-sm font-semibold text-white transition-colors disabled:opacity-40 ${
+                    botStatus.config.enabled ? 'bg-negative' : 'bg-positive'
+                  }`}
+                >
+                  {botStatus.config.enabled ? 'Отключить' : 'Включить'}
+                </button>
+              )}
+
+              {botMessage && <div className="mt-2 text-center text-xs text-muted">{botMessage}</div>}
+            </div>
           )}
-
-          {botMessage && <div className="mt-2 text-center text-xs text-muted">{botMessage}</div>}
         </div>
       )}
     </div>

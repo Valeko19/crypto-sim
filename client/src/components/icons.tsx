@@ -117,3 +117,13 @@ export function ShareIcon(props: IconProps) {
     </svg>
   );
 }
+
+// Points right by default; rotate via a className (e.g. "rotate-90") for an
+// expanded/accordion-open state.
+export function ChevronIcon(props: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" strokeWidth={2} stroke="currentColor" {...props}>
+      <path d="M9 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
