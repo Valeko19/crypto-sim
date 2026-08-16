@@ -117,9 +117,13 @@ export function ProfileScreen() {
           <div className="text-xs text-muted">Объём</div>
           <div className="text-base font-medium text-white">{formatUsdd(current.totalVolume)}</div>
         </div>
-        <div className="col-span-2 rounded-lg bg-card p-3">
+        <div className="rounded-lg bg-card p-3">
           <div className="text-xs text-muted">Реализ. P&L</div>
           <div className={`text-base font-medium ${pctColorClass(current.realizedPnl)}`}>{formatUsdd(current.realizedPnl)}</div>
+        </div>
+        <div className="rounded-lg bg-card p-3">
+          <div className="text-xs text-muted">Оплаченная комиссия</div>
+          <div className="text-base font-medium text-white">{formatUsdd(current.totalFeesPaid)}</div>
         </div>
       </div>
 

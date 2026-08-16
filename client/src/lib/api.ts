@@ -40,6 +40,7 @@ export interface HoldingView {
 export interface PortfolioView {
   usddBalance: number; holdings: HoldingView[]; netWorth: number; rank: string;
   league: string; leagueIndex: number; tradesCount: number; totalVolume: number; realizedPnl: number;
+  totalFeesPaid: number;
   username: string;
 }
 
