@@ -91,7 +91,7 @@ async function executeTradeUnlocked(state: EngineState, playerId: string, params
     // coinIn. Must remove exactly that much from the holding, not the
     // originally-requested coinIn, or the player loses coins that were never
     // actually sold.
-    await applySell(playerId, coinId, result.coinAmount, netOut, result.avgPrice);
+    await applySell(playerId, coinId, result.coinAmount, netOut, result.avgPrice, fee);
     cs.playerOwnedCoins = Math.max(0, cs.playerOwnedCoins - result.coinAmount);
     recordTradeVolume(playerId, netOut);
     return { ...result, usddAmount: netOut, fee };
