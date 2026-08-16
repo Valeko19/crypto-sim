@@ -7,7 +7,6 @@ import { CoinAvatar } from '../components/CoinAvatar';
 import { FearGreedBar } from '../components/FearGreedBar';
 import { formatCompact, formatPrice, formatPct, pctColorClass, formatDurationShort } from '../lib/format';
 
-const SECTION_LABEL: Record<string, string> = { top1: 'Топ 1', alt: 'Альткоины', meme: 'Мемкоины' };
 const SECTION_ORDER = ['top1', 'alt', 'meme'];
 
 export function MarketScreen() {
@@ -85,38 +84,39 @@ export function MarketScreen() {
 
       <div className="mt-6 space-y-6">
         {SECTION_ORDER.map(section => (
-          <div key={section}>
-            <h2 className="mb-2 text-sm font-medium text-muted">{SECTION_LABEL[section]}</h2>
-            <div className="space-y-2">
-              {bySection[section].map(coin => {
-                const l = live.prices[coin.id];
-                const price = l?.price ?? coin.price;
-                const change = l?.changePct ?? coin.changePct;
-                const capPrice = capPrices[coin.id]?.price ?? coin.price;
-                return (
-                  <button
-                    key={coin.id}
-                    onClick={() => navigate(`/market/${coin.id}`)}
-                    className="flex w-full items-center gap-3 rounded-2xl border border-border bg-card p-3 text-left transition-colors hover:bg-card-light"
-                  >
-                    <CoinAvatar coinId={coin.id} symbol={coin.symbol} iconUrl={coin.iconUrl} size={56} />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-baseline gap-2">
-                        <span className="font-semibold">{coin.symbol}</span>
-                        <span className="truncate text-sm text-muted">{coin.name}</span>
-                      </div>
-                      <div className="text-xs text-muted">
-                        MCap ${formatCompact(capPrice * coin.supply)} · Supply {formatCompact(coin.supply)}
-                      </div>
+          <div key={section} className="overflow-hidden rounded-2xl border border-border bg-card">
+            {bySection[section].map((coin, i, arr) => {
+              const l = live.prices[coin.id];
+              const price = l?.price ?? coin.price;
+              const change = l?.changePct ?? coin.changePct;
+              const capPrice = capPrices[coin.id]?.price ?? coin.price;
+              return (
+                <button
+                  key={coin.id}
+                  onClick={() => navigate(`/market/${coin.id}`)}
+                  className={`flex w-full items-center gap-3 py-[11px] px-[14px] text-left transition-colors hover:bg-card-light ${
+                    i < arr.length - 1 ? 'border-b border-card-light' : ''
+                  }`}
+                >
+                  <CoinAvatar coinId={coin.id} symbol={coin.symbol} iconUrl={coin.iconUrl} size={46} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-baseline gap-2" style={{ lineHeight: 1.3 }}>
+                      <span className="text-[15px] font-semibold">{coin.symbol}</span>
+                      <span className="truncate text-[12.5px] text-muted">{coin.name}</span>
                     </div>
-                    <div className="shrink-0 text-right">
-                      <div className="font-semibold">${formatPrice(price)}</div>
-                      <div className={`text-sm ${pctColorClass(change)}`}>{formatPct(change)}</div>
+                    <div className="mt-0.5 text-[11px] text-[#6B7290]" style={{ lineHeight: 1.4 }}>
+                      MCap ${formatCompact(capPrice * coin.supply)} · Supply {formatCompact(coin.supply)}
                     </div>
-                  </button>
-                );
-              })}
-            </div>
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <div className="text-[15px] font-semibold" style={{ lineHeight: 1.3 }}>${formatPrice(price)}</div>
+                    <div className={`mt-0.5 text-[12.5px] ${pctColorClass(change)}`} style={{ lineHeight: 1.4 }}>
+                      {formatPct(change)}
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
           </div>
         ))}
       </div>
