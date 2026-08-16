@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { createChart, ColorType, CandlestickSeriesPartialOptions, IChartApi, ISeriesApi } from 'lightweight-charts';
-import { api, CoinListItem, TradingBotStatus } from '../lib/api';
+import { api, Candle, CoinListItem, TradingBotStatus } from '../lib/api';
 import { useMarketSocket } from '../hooks/useMarketSocket';
 import { CoinAvatar } from '../components/CoinAvatar';
 import { NewsBanner } from '../components/NewsBanner';
@@ -29,6 +29,22 @@ function botIntervalLabel(intervalMs: number): string {
   const sec = Math.round(intervalMs / 1000);
   return BOT_INTERVAL_PRESET_LABELS[sec] ?? `${sec}с`;
 }
+
+// Mirrors server/src/engine/state.ts's CANDLE_INTERVAL_MS and
+// server/src/engine/candleAggregate.ts's TIMEFRAME_GROUP_SIZE — kept in sync
+// by convention (no shared package between the two workspaces). Needed here
+// so live WS ticks (which only ever carry the single raw 10s candle) can be
+// grouped into the same 30s/1m buckets the server computes for historical
+// fetches, using the candle's own timestamp only (see candleAggregate.ts's
+// epoch-anchoring comment for why this stays consistent across evictions).
+const CANDLE_INTERVAL_MS = 10_000;
+type ChartTimeframe = '10s' | '30s' | '1m';
+const TIMEFRAME_GROUP_SIZE: Record<ChartTimeframe, number> = { '10s': 1, '30s': 3, '1m': 6 };
+const CHART_TIMEFRAMES: { id: ChartTimeframe; label: string }[] = [
+  { id: '10s', label: '10с' },
+  { id: '30s', label: '30с' },
+  { id: '1m', label: '1м' },
+];
 
 export function CoinDetailScreen() {
   const { coinId = '' } = useParams();
@@ -67,10 +83,25 @@ export function CoinDetailScreen() {
   const [botBusy, setBotBusy] = useState(false);
   const [botMessage, setBotMessage] = useState<string | null>(null);
 
+  const [timeframe, setTimeframe] = useState<ChartTimeframe>('10s');
+
   const chartRef = useRef<HTMLDivElement | null>(null);
   const chartApiRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const lastPrecisionRef = useRef<number | null>(null);
+  // The currently-forming aggregated bar for the active timeframe, seeded
+  // from the last (already-aggregated) candle of the most recent historical
+  // fetch, then incrementally extended by live WS ticks — see the live
+  // candle-update effect below.
+  const currentGroupRef = useRef<Candle | null>(null);
+  // Guards the live-update effect from touching the chart series until the
+  // historical setData() for the CURRENT coinId+timeframe has actually
+  // landed — switching timeframe swaps out the series' whole contents
+  // asynchronously, and a live tick that sneaks in before that resolves
+  // would compute a bucket boundary against the OLD (about-to-be-replaced)
+  // data and can land earlier than what's already drawn, which
+  // lightweight-charts' update() rejects outright.
+  const chartReadyRef = useRef(false);
 
   useEffect(() => {
     api.getCoins().then(res => setCoin(res.coins.find(c => c.id === coinId) ?? null));
@@ -195,25 +226,52 @@ export function CoinDetailScreen() {
   useEffect(() => {
     let cancelled = false;
     lastPrecisionRef.current = null; // force a fresh priceFormat for the new coin
-    api.getCandles(coinId).then(({ candles }) => {
+    currentGroupRef.current = null;
+    chartReadyRef.current = false;
+    api.getCandles(coinId, timeframe).then(({ candles }) => {
       if (cancelled || !seriesRef.current || candles.length === 0) return;
       applyPrecisionIfNeeded(candles[candles.length - 1].c);
       seriesRef.current.setData(
         candles.map(c => ({ time: (c.t / 1000) as any, open: c.o, high: c.h, low: c.l, close: c.c }))
       );
+      // Seed the live-merge accumulator with the server's own last (partial)
+      // aggregated bar so the next WS tick extends the exact same bar instead
+      // of starting a fresh, incomplete one.
+      currentGroupRef.current = candles[candles.length - 1];
+      chartReadyRef.current = true;
       chartApiRef.current?.timeScale().scrollToRealTime();
     });
     return () => { cancelled = true; };
-  }, [coinId]);
+  }, [coinId, timeframe]);
 
-  // Live candle updates pushed over the WebSocket (one per tick) — pushes the
-  // in-progress bar straight into the chart instead of re-polling over REST.
+  // Live candle updates pushed over the WebSocket (one per tick, always the
+  // single raw 10s candle — see index.ts's candle_updates broadcast, which
+  // this deliberately leaves unchanged) — grouped client-side into the active
+  // timeframe's bucket using the same epoch-anchored formula as the server's
+  // aggregateCandles, so it always lands on the same bar the last historical
+  // fetch/setData populated.
   useEffect(() => {
     const c = live.candles[coinId];
-    if (!c || !seriesRef.current) return;
+    if (!c || !seriesRef.current || !chartReadyRef.current) return;
     applyPrecisionIfNeeded(c.c);
-    seriesRef.current.update({ time: (c.t / 1000) as any, open: c.o, high: c.h, low: c.l, close: c.c });
-  }, [live.candles[coinId], coinId]);
+    const groupSpanMs = TIMEFRAME_GROUP_SIZE[timeframe] * CANDLE_INTERVAL_MS;
+    const groupStart = Math.floor(c.t / groupSpanMs) * groupSpanMs;
+    const prev = currentGroupRef.current;
+    // A tick can legitimately race ahead of (or behind) the historical
+    // setData() seed — e.g. a WS tick applied before the REST fetch resolves
+    // gets overwritten by an older setData() snapshot, or React StrictMode's
+    // dev-only double effect invocation replays a tick against a freshly
+    // recreated chart series. lightweight-charts' update() throws if given a
+    // time older than what's already in the series, so just drop a
+    // now-stale tick here — the next real tick is always >= the true last
+    // bar and resyncs on its own.
+    if (prev && groupStart < prev.t) return;
+    const merged: Candle = prev && prev.t === groupStart
+      ? { t: groupStart, o: prev.o, h: Math.max(prev.h, c.h), l: Math.min(prev.l, c.l), c: c.c }
+      : { t: groupStart, o: c.o, h: c.h, l: c.l, c: c.c };
+    currentGroupRef.current = merged;
+    seriesRef.current.update({ time: (merged.t / 1000) as any, open: merged.o, high: merged.h, low: merged.l, close: merged.c });
+  }, [live.candles[coinId], coinId, timeframe]);
 
   const livePrice = live.prices[coinId]?.price ?? coin?.price ?? 0;
   const liveChange = live.prices[coinId]?.changePct ?? coin?.changePct ?? 0;
@@ -360,7 +418,22 @@ export function CoinDetailScreen() {
 
       <NewsBanner news={live.marketStatus?.activeNews ?? null} />
 
-      <div className="mt-4 overflow-hidden rounded-2xl border border-border bg-card">
+      <div className="mt-4 flex gap-1 rounded-xl bg-card-light p-1">
+        {CHART_TIMEFRAMES.map(tf => (
+          <button
+            key={tf.id}
+            type="button"
+            onClick={() => setTimeframe(tf.id)}
+            className={`flex-1 rounded-lg py-1.5 text-xs font-semibold transition-colors ${
+              timeframe === tf.id ? 'bg-accent-gradient text-white' : 'text-muted hover:text-white'
+            }`}
+          >
+            {tf.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="mt-2 overflow-hidden rounded-2xl border border-border bg-card">
         <div ref={chartRef} className="w-full" />
       </div>
 

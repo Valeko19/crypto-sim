@@ -106,8 +106,13 @@ export interface EngineState {
   newsDecks: Record<string, string[]>; // no-repeat-until-exhausted headline decks, keyed `${direction}_${strength}`
 }
 
-const CANDLE_INTERVAL_MS = 5_000;
-const MAX_CANDLES = 600; // 50 min of 5s candles
+// The 5s timeframe was dropped entirely (10s is now the finest grain shown
+// anywhere) — no game logic (gravity, modes, quests, etc.) ever reads the
+// candle arrays, only the chart does, so the base interval can just BE the
+// smallest timeframe needed instead of storing 5s bars and aggregating them
+// up even for the 10s view.
+const CANDLE_INTERVAL_MS = 10_000;
+const MAX_CANDLES = 3_000; // ~8.3h of 10s candles
 const RECENT_CHANGE_WINDOW_MS = 4 * 60_000; // the displayed % change looks back this far
 
 export function createInitialState(): EngineState {

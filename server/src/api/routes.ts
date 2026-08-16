@@ -5,6 +5,7 @@ import { quoteBuy, quoteSell } from '../engine/amm.js';
 import { executeTrade, TradeError } from '../engine/trade.js';
 import { forcePhase, fearGreedLabel, phaseProgress } from '../engine/tick.js';
 import { justifiedPrice } from '../engine/gravity.js';
+import { aggregateCandles, isChartTimeframe } from '../engine/candleAggregate.js';
 import { triggerNewsEvent } from '../engine/news.js';
 import { NewsDirection, NewsStrength } from '../config/news.js';
 import { MACRO_CONFIG, MACRO_ORDER, MacroPhase } from '../engine/macroCycle.js';
@@ -67,8 +68,10 @@ export function createRouter(state: EngineState) {
   router.get('/coins/:id/candles', (req, res) => {
     const cs = state.coins[req.params.id];
     if (!cs) return res.status(404).json({ error: 'coin not found' });
+    const timeframeParam = String(req.query.timeframe ?? '10s');
+    if (!isChartTimeframe(timeframeParam)) return res.status(400).json({ error: 'invalid timeframe' });
     const candles = cs.currentCandle ? [...cs.candles, cs.currentCandle] : cs.candles;
-    res.json({ candles });
+    res.json({ candles: aggregateCandles(candles, timeframeParam) });
   });
 
   router.post('/trade/quote', async (req, res) => {

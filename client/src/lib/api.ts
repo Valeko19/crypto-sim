@@ -120,7 +120,8 @@ async function req<T>(path: string, options?: RequestInit): Promise<T> {
 
 export const api = {
   getCoins: () => req<{ coins: CoinListItem[]; marketStatus: MarketStatus }>('/coins'),
-  getCandles: (coinId: string) => req<{ candles: Candle[] }>(`/coins/${coinId}/candles`),
+  getCandles: (coinId: string, timeframe: string = '10s') =>
+    req<{ candles: Candle[] }>(`/coins/${coinId}/candles?timeframe=${timeframe}`),
   getPortfolio: () => req<PortfolioView>('/portfolio'),
   getQuests: () => req<QuestsView>('/quests'),
   claimQuest: (questId: string) => req<{ success: boolean; amount: number }>('/quests/claim', {
