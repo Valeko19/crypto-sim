@@ -169,6 +169,11 @@ export function CoinDetailScreen() {
     setBotMessage(null);
     try {
       await api.toggleBot(false);
+      // botContentOpen falls back to botExpanded once botActiveHere flips
+      // false below — if the block was open ONLY because the bot was
+      // already active on mount (botExpanded still at its false default),
+      // this stop would otherwise collapse it right as it reports success.
+      setBotExpanded(true);
       refreshBotStatus();
     } catch (e: any) {
       setBotMessage(e.message ?? 'Ошибка');
