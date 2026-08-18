@@ -314,7 +314,11 @@ export function CoinDetailScreen() {
 
   function applyPct(pct: number) {
     const raw = available * (pct / 100);
-    setAmount(raw > 0 ? String(Number(raw.toFixed(8))) : '');
+    // USDD is currency — 2 decimals is plenty. Coin quantity keeps more
+    // precision since several coins are worth a small fraction of a cent
+    // (e.g. HMFL), where 2 decimals would round the amount straight to 0.
+    const rounded = mode === 'usdd' ? Number(raw.toFixed(2)) : Number(raw.toFixed(8));
+    setAmount(rounded > 0 ? String(rounded) : '');
     setIsMaxAmount(pct === 100);
   }
 

@@ -82,7 +82,7 @@ export function FarmingScreen() {
               >
                 <CoinAvatar coinId={c.coinId} symbol={c.symbol} iconUrl={c.iconUrl} size={36} />
                 <span className="min-w-0 flex-1 truncate font-semibold">{c.symbol}</span>
-                <span className="shrink-0 text-base font-semibold text-accent-to">{config.flexibleAprPct}% APY</span>
+                <span className="shrink-0 text-sm font-semibold text-accent-to">{config.flexibleAprPct}% APY</span>
                 <ChevronIcon className={`h-4 w-4 shrink-0 text-muted transition-transform ${expanded ? 'rotate-90' : ''}`} />
               </button>
 
