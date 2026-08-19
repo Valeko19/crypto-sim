@@ -7,8 +7,6 @@ import { CoinAvatar } from '../components/CoinAvatar';
 import { FearGreedBar } from '../components/FearGreedBar';
 import { formatCompact, formatPrice, formatPct, pctColorClass, formatDurationShort } from '../lib/format';
 
-const SECTION_ORDER = ['top1', 'alt', 'meme'];
-
 export function MarketScreen() {
   const [coins, setCoins] = useState<CoinListItem[] | null>(null);
   const [marketStatus, setMarketStatus] = useState<MarketStatus | null>(null);
@@ -36,25 +34,21 @@ export function MarketScreen() {
 
   const status = live.marketStatus ?? marketStatus;
 
-  const bySection = useMemo(() => {
+  // Ranked by market cap (refreshed every 10s, see capPrices above) across
+  // ALL coins in one list — a coin's section (top1/alt/meme) still exists in
+  // the data (icons, engine mechanics) but no longer bounds its position
+  // here, so a strong memecoin can genuinely outrank a weak altcoin and
+  // vice versa instead of being capped by a fixed category order.
+  const rankedCoins = useMemo(() => {
     if (!coins) return null;
-    const groups: Record<string, CoinListItem[]> = { top1: [], alt: [], meme: [] };
-    for (const c of coins) groups[c.section].push(c);
-    // Rank by market cap (refreshed every 10s, see capPrices above) within each
-    // section — a coin's section (top1 / alt / meme) is fixed, but its position
-    // inside that section tracks its cap so the list stays a real leaderboard,
-    // not a static order.
-    for (const list of Object.values(groups)) {
-      list.sort((a, b) => {
-        const capA = (capPrices[a.id]?.price ?? a.price) * a.supply;
-        const capB = (capPrices[b.id]?.price ?? b.price) * b.supply;
-        return capB - capA;
-      });
-    }
-    return groups;
+    return [...coins].sort((a, b) => {
+      const capA = (capPrices[a.id]?.price ?? a.price) * a.supply;
+      const capB = (capPrices[b.id]?.price ?? b.price) * b.supply;
+      return capB - capA;
+    });
   }, [coins, capPrices]);
 
-  if (!coins || !bySection) {
+  if (!coins || !rankedCoins) {
     return <div className="p-4 text-muted">Загрузка рынка…</div>;
   }
 
@@ -83,7 +77,7 @@ export function MarketScreen() {
       {status && <FearGreedBar index={status.fearGreedIndex} label={status.fearGreedLabel} />}
 
       <div className="mt-6 overflow-hidden rounded-2xl border border-border bg-card">
-        {SECTION_ORDER.flatMap(section => bySection[section]).map((coin, i, arr) => {
+        {rankedCoins.map((coin, i, arr) => {
           const l = live.prices[coin.id];
           const price = l?.price ?? coin.price;
           const change = l?.changePct ?? coin.changePct;
