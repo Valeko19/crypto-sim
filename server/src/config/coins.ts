@@ -85,7 +85,7 @@ export const COINS: CoinConfig[] = [
 
 export const COIN_MAP: Record<string, CoinConfig> = Object.fromEntries(COINS.map(c => [c.id, c]));
 
-export const TRADE_FEE_PCT = 0.005; // 0.5% per trade, unless the coin overrides it
+export const TRADE_FEE_PCT = 0.01; // 1% per trade, unless the coin overrides it
 export const MIN_TRADE_USDD = 1;
 
 export function tradeFeePct(coinId: string): number {
