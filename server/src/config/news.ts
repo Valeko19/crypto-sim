@@ -9,7 +9,7 @@ export const NEWS_BANNER_DURATION_MS = 60_000;
 
 // The price move ramps in over this many ticks (~seconds) — fast, but not a
 // single-tick teleport.
-export const NEWS_RAMP_TICKS_RANGE: [number, number] = [8, 20];
+export const NEWS_RAMP_TICKS_RANGE: [number, number] = [20, 40];
 
 // Weak fires noticeably more often than medium, medium more than strong.
 export const NEWS_STRENGTH_WEIGHTS: Record<NewsStrength, number> = {
@@ -22,8 +22,8 @@ export const NEWS_STRENGTH_WEIGHTS: Record<NewsStrength, number> = {
 // other coin scales this through its own existing macroCorrelation*beta, same
 // as macro-phase drift.
 export const NEWS_EFFECT_RANGE: Record<NewsDirection, Record<NewsStrength, [number, number]>> = {
-  positive: { weak: [2, 5], medium: [5, 15], strong: [15, 30] },
-  negative: { weak: [-5, -2], medium: [-15, -5], strong: [-30, -15] },
+  positive: { weak: [1.6, 4], medium: [4, 12], strong: [12, 24] },
+  negative: { weak: [-4, -1.6], medium: [-12, -4], strong: [-24, -12] },
 };
 
 export const NEWS_HEADLINES: Record<NewsDirection, Record<NewsStrength, string[]>> = {

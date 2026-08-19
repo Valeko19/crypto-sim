@@ -67,11 +67,11 @@ export interface MacroPhaseConfig {
 // ~+239% i.e. ~3.39x (range 2x-5x), euphoria ~+64% (range +30%/+100%), bear
 // ~-66% (range -50%/-80%) — none of these needed a bounds change.
 export const MACRO_CONFIG: Record<MacroPhase, MacroPhaseConfig> = {
-  accumulation: { ...scaled(12, 32), totalMoveRange: [1 / 1.15, 1.15], volMultiplier: 1.0, fearGreedBase: 32, label: 'Зима', localCycleUpBias: 0.5 },
-  early_bull: { ...scaled(8, 20), totalMoveRange: [1.15, 1.6], volMultiplier: 1.1, fearGreedBase: 55, label: 'Восстановление', localCycleUpBias: 0.62 },
-  bull: { ...scaled(10, 24), totalMoveRange: [2, 5], volMultiplier: 1.3, fearGreedBase: 68, label: 'Бычий', localCycleUpBias: 0.72 },
-  euphoria: { ...scaled(2, 8), totalMoveRange: [1.3, 2], volMultiplier: 1.8, fearGreedBase: 88, label: 'Распределение', localCycleUpBias: 0.78 },
-  bear: { ...scaled(8, 24), totalMoveRange: [0.2, 0.5], volMultiplier: 1.5, fearGreedBase: 18, label: 'Медвежий', localCycleUpBias: 0.25 },
+  accumulation: { ...scaled(12, 32), totalMoveRange: [1 / 1.15, 1.15], volMultiplier: 0.85, fearGreedBase: 32, label: 'Зима', localCycleUpBias: 0.5 },
+  early_bull: { ...scaled(8, 20), totalMoveRange: [1.15, 1.6], volMultiplier: 0.93, fearGreedBase: 55, label: 'Восстановление', localCycleUpBias: 0.62 },
+  bull: { ...scaled(10, 24), totalMoveRange: [2, 5], volMultiplier: 1.10, fearGreedBase: 68, label: 'Бычий', localCycleUpBias: 0.72 },
+  euphoria: { ...scaled(2, 8), totalMoveRange: [1.3, 2], volMultiplier: 1.53, fearGreedBase: 88, label: 'Распределение', localCycleUpBias: 0.78 },
+  bear: { ...scaled(8, 24), totalMoveRange: [0.2, 0.5], volMultiplier: 1.28, fearGreedBase: 18, label: 'Медвежий', localCycleUpBias: 0.25 },
 };
 
 export function nextPhase(current: MacroPhase): MacroPhase {
