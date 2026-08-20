@@ -31,7 +31,7 @@ function dominantComponent(lt: any): string {
   return parts[0][0];
 }
 
-const TRIALS = 15;
+const TRIALS = 50;
 const COMPONENT_KEYS = ['macroDriftPct', 'localDriftPct', 'baseNoisePct', 'relativeNoisePct', 'stumblePct', 'gravityPct', 'newsPct'] as const;
 
 for (const phase of PHASES) {

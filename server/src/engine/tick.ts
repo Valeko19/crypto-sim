@@ -17,6 +17,12 @@ const LIVELINESS_CAP = 2.5;
 // flip sign is significantly damped by the time 5 of them sum into one candle.
 // This value is picked to still produce visible reversal CANDLES (not just ticks).
 const RELATIVE_NOISE_FACTOR = 11;
+// Caps how much of noiseAmp's full range (see NOISE_AMP_MAX below) this term
+// gets to use — see the long comment at its use site in the main tick loop
+// for why (RELATIVE_NOISE_FACTOR * noiseAmp is an up-to-35x multiplier on the
+// drift at noiseAmp's full ceiling, and noiseAmp staying elevated across
+// several correlated ticks is what compounds into a near-vertical move).
+const RELATIVE_NOISE_AMP_CAP = 1.8;
 // Array#shift() is O(n) — negligible at the real cadence (once per candle
 // close, i.e. every CANDLE_INTERVAL_MS), but adds up badly under
 // /debug/fast-forward's tight synchronous tick loop (see api/routes.ts),
@@ -85,37 +91,43 @@ function updateStumble(cs: CoinState, driftPctPerTick: number, baseVolPerMin: nu
   return 0;
 }
 
-// Bear's trend segments produce a noticeably fatter tail of long single-color
-// candle streaks than every other phase. The plain per-tick stumble above
-// mostly can't fix this: it spikes and cancels one tick later, and since a
-// candle spans 5 ticks, ~80% of the time both the spike and its cancellation
-// land inside the SAME candle and net out before that candle even closes —
-// invisible as anything but a wick, never as an actual color flip. Shortening
-// bear's trend segments to compensate was tried and rejected: it measurably
+// A single trend-mode segment can span a large fraction of a phase's ticks
+// (up to ~28% — TREND_FRAC_RANGE below) with a roughly constant drift
+// direction, which produces a long tail of same-color candle streaks
+// whenever per-candle noise isn't big enough to occasionally flip a close
+// back against that drift. This was originally scoped to bear only (its
+// trend segments were measured to be the worst offender at the time), but a
+// diagnostic run across all five phases (server/scripts/diagnose-volatility.ts)
+// found accumulation/early_bull/bull now produce LONGER max streaks per
+// phase than bear does (15 trials each: accumulation up to 27, early_bull up
+// to 29, bull up to 28, vs bear's 20) — so this now runs for every phase, not
+// just bear. The plain per-tick stumble above mostly can't fix this on its
+// own: it spikes and cancels one tick later, and since a candle spans 5
+// ticks, ~80% of the time both the spike and its cancellation land inside
+// the SAME candle and net out before that candle even closes — invisible as
+// anything but a wick, never as an actual color flip. Shortening trend
+// segments to compensate was tried (for bear) and rejected: it measurably
 // undershot the phase's own calibrated target (the capped homing correction
-// can't always make up lost ground), which this task explicitly requires to
-// stay intact. Instead: on the specific tick that's about to CLOSE a candle,
-// with a chance that escalates once real same-color streaks have built up
-// (tracked via `sameColorStreak`), push just far enough to flip that candle's
-// close to the other side of its open — then cancel the exact same amount on
-// the next tick (the new candle's first tick), so the net effect across the
-// pair is still exactly zero, only this time reliably landing on the one
-// candle that needed to flip. Bull and the other three phases never call
-// this, so their behavior is unchanged.
-const BEAR_STREAK_GRACE = 5; // candles of the same color before any extra chance kicks in
-const BEAR_STREAK_HAZARD_RATE = 0.05; // added chance per candle past the grace streak
-const BEAR_STREAK_HAZARD_MAX = 0.55; // cap so it's a strong nudge, never a certainty
+// can't always make up lost ground). Instead: on the specific tick that's
+// about to CLOSE a candle, with a chance that escalates once real same-color
+// streaks have built up (tracked via `sameColorStreak`), push just far
+// enough to flip that candle's close to the other side of its open — then
+// cancel the exact same amount on the next tick (the new candle's first
+// tick), so the net effect across the pair is still exactly zero, only this
+// time reliably landing on the one candle that needed to flip.
+const STREAK_GRACE = 5; // candles of the same color before any extra chance kicks in
+const STREAK_HAZARD_RATE = 0.05; // added chance per candle past the grace streak
+const STREAK_HAZARD_MAX = 0.55; // cap so it's a strong nudge, never a certainty
 const STREAK_FLIP_BUFFER_PCT = 0.4; // how far past zero the flip pushes, so the new color is unambiguous
 
 // Caller is responsible for handling any already-pending reversal before
 // calling this (see updateStumble above).
-function maybeBreakBearStreak(cs: CoinState, state: EngineState): number {
-  if (state.macroPhase !== 'bear') return 0;
+function maybeBreakColorStreak(cs: CoinState, state: EngineState): number {
   const isClosingTick = state.tickCount % TICKS_PER_CANDLE === TICKS_PER_CANDLE - 1;
   if (!isClosingTick || !cs.currentCandle) return 0;
   const streak = cs.sameColorStreak;
-  if (streak < BEAR_STREAK_GRACE) return 0;
-  const hazard = Math.min(BEAR_STREAK_HAZARD_MAX, BEAR_STREAK_HAZARD_RATE * (streak - BEAR_STREAK_GRACE + 1));
+  if (streak < STREAK_GRACE) return 0;
+  const hazard = Math.min(STREAK_HAZARD_MAX, STREAK_HAZARD_RATE * (streak - STREAK_GRACE + 1));
   if (Math.random() >= hazard) return 0;
 
   const openPrice = cs.currentCandle.o;
@@ -453,17 +465,33 @@ export function tick(state: EngineState) {
     // to a phase drift strong enough to move the price 50-80%+ in minutes — this
     // term keeps the chart visibly jagged (false breakouts, wobble) at any drift
     // scale without needing separate noise tuning per phase/category.
-    const relativeNoiseContribution = RELATIVE_NOISE_FACTOR * Math.abs(driftPctPerTick) * gaussianish() * noiseAmp;
+    //
+    // Tried multiplying this by macroVolMult first (same as baseNoiseContribution)
+    // to keep it from growing relatively louder as a phase's ambient floor gets
+    // quieter — measured via server/scripts/diagnose-volatility.ts to make things
+    // WORSE for bull/euphoria/bear specifically, since their volMultiplier is
+    // ABOVE 1 (they're meant to be louder than accumulation/early_bull), so that
+    // scaling amplified this term there instead of taming it. The real problem is
+    // the term's own worst-case ceiling: RELATIVE_NOISE_FACTOR(11) * noiseAmp (up
+    // to 3.2) is an up-to-35x multiplier on the drift, and noiseAmp staying
+    // elevated across several correlated ticks (it's mean-reverting, not
+    // independent per tick) is what compounds into a near-vertical multi-candle
+    // move. Capping the noiseAmp this term sees (not the shared noiseAmp state
+    // itself, which baseNoiseContribution and updateStumble still use at full
+    // range for their own legitimate texture) tames that tail directly, in every
+    // phase equally, without touching the per-phase loudness ordering at all.
+    const relativeNoiseContribution =
+      RELATIVE_NOISE_FACTOR * Math.abs(driftPctPerTick) * gaussianish() * Math.min(noiseAmp, RELATIVE_NOISE_AMP_CAP);
     // Rare mean-zero single-tick stumble against the current direction — see
     // "Sub-candle texture" above; net zero across the two ticks it spans. Any
-    // already-pending reversal takes priority; otherwise bear gets first shot
-    // at a targeted streak-breaking flip before falling back to the ambient one.
+    // already-pending reversal takes priority; otherwise a targeted
+    // streak-breaking flip gets first shot before falling back to the ambient one.
     let stumbleContribution: number;
     if (cs.stumblePending !== 0) {
       stumbleContribution = -cs.stumblePending;
       cs.stumblePending = 0;
     } else {
-      stumbleContribution = maybeBreakBearStreak(cs, state);
+      stumbleContribution = maybeBreakColorStreak(cs, state);
       if (stumbleContribution === 0) stumbleContribution = updateStumble(cs, driftPctPerTick, baseVolPerMin);
     }
     // Long-horizon anchor pull (see gravity.ts) — computed after the relative
