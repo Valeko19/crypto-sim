@@ -189,6 +189,21 @@ const CORRECTION_START_FRAC = 0.82; // homing pull ramps in over the final ~18% 
 // occasions) — an acceptable trade-off against a game-breaking vertical move.
 const MAX_HOMING_RATE_MULTIPLIER = 6;
 const MIN_HOMING_RATE_CAP_PCT_PER_MIN = 3; // floor so tiny-target phases (e.g. accumulation) still get a real cap
+// trend/counter used to hold macroModeDriftPctPerMin perfectly constant for
+// their whole segment (unlike choppy, which already resamples every tick) —
+// on a chart this reads as an almost geometrically straight "hill", most
+// visible in accumulation where the target rate is small and the segment's
+// speed is just modeRateFloorPctPerMin held dead flat. This bounded,
+// mean-reverting walk lets the LIVE rate wander around the segment's own
+// fixed target (macroModeBaseDriftPctPerMin) instead — zero-mean by
+// construction, so the segment's average destination is unaffected, only the
+// path to it varies. Reversion is tuned for a ~17-tick (~1.5-2 candle) half
+// life: slow enough to read as a gentle curve rather than tick noise (that's
+// already candleNoiseFactor/noiseAmpState's job), fast enough to visibly wave
+// more than once across a typical multi-candle segment.
+const MODE_WOBBLE_MEAN_REVERSION = 0.04; // per-tick pull of the wobble back toward 0
+const MODE_WOBBLE_SHOCK = 0.3; // per-tick random shock size
+const MODE_WOBBLE_MAX = 0.7; // clamps the wobble to +/-70% of the segment's own base rate — can slow way down, never fully reverses direction
 
 function phaseTotalTicks(state: EngineState): number {
   return Math.max(1, state.macroPhaseEndTick - state.macroPhaseStartTick);
@@ -218,6 +233,14 @@ function modeDurationTicks(state: EngineState, fracRange: [number, number]): num
   return Math.max(MIN_MODE_TICKS, Math.round(phaseTotalTicks(state) * randRange(fracRange[0], fracRange[1])));
 }
 
+// Bounded mean-reverting walk around 0 — see the constants' comment above.
+// Only meant to be called while macroMode is 'trend' or 'counter'.
+function updateModeWobble(state: EngineState): number {
+  const next = state.macroModeWobbleState + MODE_WOBBLE_MEAN_REVERSION * (0 - state.macroModeWobbleState) + MODE_WOBBLE_SHOCK * gaussianish();
+  state.macroModeWobbleState = Math.max(-MODE_WOBBLE_MAX, Math.min(MODE_WOBBLE_MAX, next));
+  return state.macroModeWobbleState;
+}
+
 function enterTrendMode(state: EngineState) {
   const durationTicks = modeDurationTicks(state, TREND_FRAC_RANGE);
   // "Flat average" rate the whole phase would need at a constant speed — trend
@@ -229,6 +252,8 @@ function enterTrendMode(state: EngineState) {
   state.macroModeStartTick = state.tickCount;
   state.macroModeEndTick = state.tickCount + durationTicks;
   state.macroModeDriftPctPerMin = sign * magnitude * randRange(1.0, 2.2);
+  state.macroModeBaseDriftPctPerMin = state.macroModeDriftPctPerMin; // fixed target the wobble reverts toward (see updateModeWobble)
+  state.macroModeWobbleState = 0; // fresh each new segment
 }
 
 function enterCounterMode(state: EngineState) {
@@ -243,6 +268,8 @@ function enterCounterMode(state: EngineState) {
   state.macroModeStartTick = state.tickCount;
   state.macroModeEndTick = state.tickCount + durationTicks;
   state.macroModeDriftPctPerMin = logReturnToDriftPctPerMin(counterLogReturn, durationTicks);
+  state.macroModeBaseDriftPctPerMin = state.macroModeDriftPctPerMin; // fixed target the wobble reverts toward (see updateModeWobble)
+  state.macroModeWobbleState = 0; // fresh each new segment
 }
 
 function enterChoppyMode(state: EngineState) {
@@ -258,7 +285,9 @@ function enterChoppyMode(state: EngineState) {
 
 // Called every tick: advances the mode machine when the current mode's
 // (randomly-drawn) duration elapses, and resamples 'choppy' fresh each tick
-// (zero-mean, so it swings without ever trending anywhere).
+// (zero-mean, so it swings without ever trending anywhere), and now wobbles
+// 'trend'/'counter' every tick too (zero-mean around their own fixed target
+// rate — see updateModeWobble) so a segment's speed isn't perfectly constant.
 function updateMacroMode(state: EngineState) {
   if (state.tickCount >= state.macroModeEndTick) {
     if (state.macroMode === 'trend') {
@@ -269,6 +298,9 @@ function updateMacroMode(state: EngineState) {
     }
   } else if (state.macroMode === 'choppy') {
     state.macroModeDriftPctPerMin = state.macroChoppyAmplitudePctPerMin * gaussianish();
+  } else {
+    const wobble = updateModeWobble(state);
+    state.macroModeDriftPctPerMin = state.macroModeBaseDriftPctPerMin * (1 + wobble);
   }
 }
 

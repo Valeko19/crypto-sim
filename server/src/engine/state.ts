@@ -98,7 +98,15 @@ export interface EngineState {
   macroMode: MacroMode;
   macroModeStartTick: number; // when the current mode segment began — used to gauge how long it's run
   macroModeEndTick: number;
-  macroModeDriftPctPerMin: number; // current mode's rate (resampled every tick while choppy)
+  macroModeDriftPctPerMin: number; // current mode's LIVE rate — resampled every tick for choppy, and now wobbles every tick around macroModeBaseDriftPctPerMin for trend/counter too (see updateModeWobble in tick.ts)
+  // The trend/counter segment's own fixed target rate, set once at mode entry
+  // — macroModeDriftPctPerMin wobbles AROUND this every tick, but this itself
+  // never changes mid-segment, so the wobble has a stable anchor to revert
+  // toward instead of drifting away with no reference point.
+  macroModeBaseDriftPctPerMin: number;
+  // Bounded mean-reverting walk around 0, reset fresh each new trend/counter
+  // segment — see updateModeWobble in tick.ts.
+  macroModeWobbleState: number;
   macroChoppyAmplitudePctPerMin: number; // reference amplitude while macroMode === 'choppy'
   fearGreedIndex: number;
   coins: Record<string, CoinState>;
@@ -163,6 +171,8 @@ export function createInitialState(): EngineState {
     macroModeStartTick: 0,
     macroModeEndTick: 0,
     macroModeDriftPctPerMin: 0,
+    macroModeBaseDriftPctPerMin: 0,
+    macroModeWobbleState: 0,
     macroChoppyAmplitudePctPerMin: 0,
     fearGreedIndex: MACRO_CONFIG.accumulation.fearGreedBase,
     coins,
