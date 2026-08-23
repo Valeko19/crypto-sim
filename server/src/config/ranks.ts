@@ -5,15 +5,15 @@ export interface RankDef {
 }
 
 export const RANKS: RankDef[] = [
-  { name: 'Планктон', min: 0, max: 1_000 },
-  { name: 'Креветка', min: 1_000, max: 10_000 },
-  { name: 'Краб', min: 10_000, max: 50_000 },
-  { name: 'Осьминог', min: 50_000, max: 250_000 },
-  { name: 'Дельфин', min: 250_000, max: 1_000_000 },
-  { name: 'Акула', min: 1_000_000, max: 10_000_000 },
-  { name: 'Касатка', min: 10_000_000, max: 100_000_000 },
-  { name: 'Кит', min: 100_000_000, max: 1_000_000_000 },
-  { name: 'Кракен', min: 1_000_000_000, max: Infinity },
+  { name: 'Планктон', min: 0, max: 10_000 },
+  { name: 'Креветка', min: 10_000, max: 50_000 },
+  { name: 'Краб', min: 50_000, max: 250_000 },
+  { name: 'Осьминог', min: 250_000, max: 1_000_000 },
+  { name: 'Дельфин', min: 1_000_000, max: 10_000_000 },
+  { name: 'Акула', min: 10_000_000, max: 100_000_000 },
+  { name: 'Касатка', min: 100_000_000, max: 1_000_000_000 },
+  { name: 'Кит', min: 1_000_000_000, max: 10_000_000_000 },
+  { name: 'Кракен', min: 10_000_000_000, max: Infinity },
 ];
 
 // One-time bonus paid the FIRST time a player's net worth ever reaches each
@@ -24,14 +24,14 @@ export const RANKS: RankDef[] = [
 // boundary — only ever compared against the peak, never the live value.
 export const RANK_UP_REWARDS: number[] = [
   0, // Планктон
-  100, // Креветка
-  1_000, // Краб
-  5_000, // Осьминог
-  25_000, // Дельфин
-  100_000, // Акула
-  1_000_000, // Касатка
-  10_000_000, // Кит
-  100_000_000, // Кракен
+  1_000, // Креветка
+  5_000, // Краб
+  25_000, // Осьминог
+  100_000, // Дельфин
+  1_000_000, // Акула
+  10_000_000, // Касатка
+  100_000_000, // Кит
+  1_000_000_000, // Кракен
 ];
 
 export function rankForNetWorth(netWorth: number): RankDef {
