@@ -59,6 +59,14 @@ export interface CoinState {
   // the phase's calibrated target — only ever shows up as a wick or, rarely, a
   // single off-color candle.
   noiseAmpState: number;
+  // Separate, faster-changing multiplier redrawn once per candle (see
+  // updateCandleNoiseFactor in tick.ts) — noiseAmpState above clusters over a
+  // ~1-2 CANDLE timescale by design, which leaves it nearly constant across
+  // any one candle's own 10 ticks, so every candle ends up a similar size
+  // with a similar wick. This gives each candle its own independent
+  // "personality" (calm vs. bursty) for its whole duration, layered on top
+  // without changing noiseAmpState's own tuning or long-run average.
+  candleNoiseFactor: number;
   stumblePending: number;
   // Tracks consecutive closed candles of the same color, so bear-phase streak
   // breaking (see tick.ts) can escalate specifically once a real streak has
@@ -136,6 +144,7 @@ export function createInitialState(): EngineState {
       projectLevel: cfg.startPrice,
       playerOwnedCoins: 0, // corrected at boot from real holdings (see index.ts)
       noiseAmpState: 1,
+      candleNoiseFactor: 1,
       stumblePending: 0,
       lastCandleColor: null,
       sameColorStreak: 0,

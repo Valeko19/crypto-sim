@@ -52,10 +52,20 @@ const CANDLE_TRIM_BATCH = 200;
 //    is precisely zero. Landing mid-candle it reads as a wick; landing across
 //    a candle boundary it occasionally reads as one off-color candle — never
 //    a sustained reversal, since it's gone again one tick later.
+// 3. `candleNoiseFactor` (see state.ts) — noiseAmpState's own ~1-2 CANDLE
+//    clustering timescale means it barely moves across any single candle's
+//    10 ticks, so with only that in play every candle still ends up a
+//    similar size with a similar wick. This factor is redrawn fresh exactly
+//    once per candle (held constant for that candle's whole span) from a
+//    range that's linear-uniform and symmetric around 1, so it can't shift
+//    the noise terms' long-run average — it only makes candles noticeably
+//    differ from their immediate neighbors (a quiet narrow one right next to
+//    a wide one with a real wick), which noiseAmpState's slower drift can't.
 const NOISE_AMP_MEAN_REVERSION = 0.15; // per-tick pull of noiseAmpState back toward 1
 const NOISE_AMP_SHOCK = 0.14; // per-tick random shock size
 const NOISE_AMP_MIN = 0.3;
 const NOISE_AMP_MAX = 3.2;
+const CANDLE_NOISE_FACTOR_SPREAD = 0.65; // candleNoiseFactor drawn uniformly from [1-this, 1+this]
 const STUMBLE_CHANCE_PER_TICK = 0.005; // ~once every ~3.3min per coin on average
 const STUMBLE_MAGNITUDE_RANGE: [number, number] = [2.5, 5]; // multiple of the coin's typical per-tick noise scale
 
@@ -73,6 +83,18 @@ function updateNoiseAmpState(cs: CoinState): number {
   const next = cs.noiseAmpState + NOISE_AMP_MEAN_REVERSION * (1 - cs.noiseAmpState) + NOISE_AMP_SHOCK * gaussianish();
   cs.noiseAmpState = Math.max(NOISE_AMP_MIN, Math.min(NOISE_AMP_MAX, next));
   return cs.noiseAmpState;
+}
+
+// Redrawn once per candle, held constant across that candle's ticks — see
+// "Sub-candle texture" point 3 above. Uses tickCount directly (not
+// cs.currentCandle's own boundary bookkeeping in updateCandle) so it's ready
+// on the very first tick of each candle regardless of call order within the
+// main loop.
+function updateCandleNoiseFactor(cs: CoinState, state: EngineState): number {
+  if (state.tickCount % TICKS_PER_CANDLE === 0) {
+    cs.candleNoiseFactor = 1 + randRange(-CANDLE_NOISE_FACTOR_SPREAD, CANDLE_NOISE_FACTOR_SPREAD);
+  }
+  return cs.candleNoiseFactor;
 }
 
 // Mean-zero single-tick counter-impulse — see "Sub-candle texture" above. Pass
@@ -458,8 +480,12 @@ export function tick(state: EngineState) {
     // Amplitude itself clusters tick-to-tick (see updateNoiseAmpState) instead
     // of every tick drawing from the same fixed width — this is what makes
     // candle bodies/wicks vary in size instead of forming an even staircase.
+    // candleNoiseFactor layers a faster, per-candle personality on top (see
+    // its own comment) so NEIGHBORING candles can differ noticeably too, not
+    // just widely-separated ones.
     const noiseAmp = updateNoiseAmpState(cs);
-    const baseNoiseContribution = (gaussianish() * baseVolPerMin / Math.sqrt(60)) * macroVolMult * cs.livelinessMultiplier * noiseAmp;
+    const candleNoiseFactor = updateCandleNoiseFactor(cs, state);
+    const baseNoiseContribution = (gaussianish() * baseVolPerMin / Math.sqrt(60)) * macroVolMult * cs.livelinessMultiplier * noiseAmp * candleNoiseFactor;
     // Noise proportional to the CURRENT drift magnitude, on top of the small
     // ambient baseline above. A fixed vol/min baseline reads as a flat line next
     // to a phase drift strong enough to move the price 50-80%+ in minutes — this
@@ -480,8 +506,14 @@ export function tick(state: EngineState) {
     // itself, which baseNoiseContribution and updateStumble still use at full
     // range for their own legitimate texture) tames that tail directly, in every
     // phase equally, without touching the per-phase loudness ordering at all.
+    // candleNoiseFactor is safe to apply here too, unlike an uncapped noiseAmp:
+    // it's redrawn fresh and independent every candle rather than carrying
+    // over autocorrelated across many of them, so a "wild" draw only ever
+    // widens ONE candle's tick-to-tick wobble (a bigger wick) — it can't stack
+    // into the kind of sustained multi-candle directional move this cap exists
+    // to prevent.
     const relativeNoiseContribution =
-      RELATIVE_NOISE_FACTOR * Math.abs(driftPctPerTick) * gaussianish() * Math.min(noiseAmp, RELATIVE_NOISE_AMP_CAP);
+      RELATIVE_NOISE_FACTOR * Math.abs(driftPctPerTick) * gaussianish() * Math.min(noiseAmp, RELATIVE_NOISE_AMP_CAP) * candleNoiseFactor;
     // Rare mean-zero single-tick stumble against the current direction — see
     // "Sub-candle texture" above; net zero across the two ticks it spans. Any
     // already-pending reversal takes priority; otherwise a targeted
