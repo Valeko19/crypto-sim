@@ -197,13 +197,24 @@ const MIN_HOMING_RATE_CAP_PCT_PER_MIN = 3; // floor so tiny-target phases (e.g. 
 // mean-reverting walk lets the LIVE rate wander around the segment's own
 // fixed target (macroModeBaseDriftPctPerMin) instead — zero-mean by
 // construction, so the segment's average destination is unaffected, only the
-// path to it varies. Reversion is tuned for a ~17-tick (~1.5-2 candle) half
-// life: slow enough to read as a gentle curve rather than tick noise (that's
-// already candleNoiseFactor/noiseAmpState's job), fast enough to visibly wave
-// more than once across a typical multi-candle segment.
-const MODE_WOBBLE_MEAN_REVERSION = 0.04; // per-tick pull of the wobble back toward 0
-const MODE_WOBBLE_SHOCK = 0.3; // per-tick random shock size
-const MODE_WOBBLE_MAX = 0.7; // clamps the wobble to +/-70% of the segment's own base rate — can slow way down, never fully reverses direction
+// path to it varies. Reversion is tuned for a ~7-tick half life: slow enough
+// to read as a gentle curve rather than tick noise (that's already
+// candleNoiseFactor/noiseAmpState's job), fast enough to visibly wave more
+// than once across a typical multi-candle segment. Its output is scaled by
+// the current phase's volMultiplier at the use site (same principle as
+// baseNoiseContribution) so accumulation's wobble stays the calmest and
+// euphoria's the liveliest, proportional to their existing coefficients.
+// Originally tuned at reversion=0.04/shock=0.3/max=0.7, which turned out too
+// strong: the shock badly outweighed the reversion, so the walk spent long
+// stretches pinned near its own ceiling (170% of the segment's base rate)
+// instead of a light ripple — most visible as 20-30% intra-phase swings
+// within accumulation, which should be the calmest phase. Retuned so
+// reversion dominates the shock (faster pull back toward 0, smaller steps,
+// tighter clamp): stationary stddev drops from ~0.35 to ~0.11, and the clamp
+// sits ~4.5 stddev away instead of ~2, so it rarely lingers at the bound.
+const MODE_WOBBLE_MEAN_REVERSION = 0.10; // per-tick pull of the wobble back toward 0
+const MODE_WOBBLE_SHOCK = 0.15; // per-tick random shock size
+const MODE_WOBBLE_MAX = 0.5; // clamps the RAW wobble to +/-50% before phase scaling (see its use site) — can slow way down, never fully reverses direction
 
 function phaseTotalTicks(state: EngineState): number {
   return Math.max(1, state.macroPhaseEndTick - state.macroPhaseStartTick);
@@ -299,8 +310,13 @@ function updateMacroMode(state: EngineState) {
   } else if (state.macroMode === 'choppy') {
     state.macroModeDriftPctPerMin = state.macroChoppyAmplitudePctPerMin * gaussianish();
   } else {
+    // Scaled by the phase's own volMultiplier — same principle as
+    // baseNoiseContribution in the main loop — so the wobble's amplitude
+    // tracks each phase's already-calibrated loudness (accumulation
+    // quietest, euphoria loudest) instead of being identical everywhere.
     const wobble = updateModeWobble(state);
-    state.macroModeDriftPctPerMin = state.macroModeBaseDriftPctPerMin * (1 + wobble);
+    const wobbleVolMult = MACRO_CONFIG[state.macroPhase].volMultiplier;
+    state.macroModeDriftPctPerMin = state.macroModeBaseDriftPctPerMin * (1 + wobble * wobbleVolMult);
   }
 }
 
