@@ -64,12 +64,20 @@ export interface MacroPhaseConfig {
 // be directional (their whole point is the trend), so their asymmetry is
 // intentional. bull/bear ranges were later narrowed from the original
 // 2x-5x / 0.2-0.5 to 1.6x-3.5x / 0.35-0.6 (still asymmetric, just a tighter
-// band) — early_bull and euphoria's ranges are unaffected by that change.
+// band) — early_bull and euphoria's ranges were unaffected by that change.
+//
+// early_bull/bull/euphoria were narrowed again after noticing the bottom-to-
+// top rally (their PRODUCT, not any one phase alone) had never actually been
+// checked: each phase individually was reasonable, but early_bull*bull*euphoria
+// had a theoretical ceiling of x11.2 (observed runs reached ~x10) — too much
+// for three consecutive phases. New ranges bring that product down to
+// x1.85-x7.0: early_bull 1.15x-1.6x -> 1.1x-1.4x, bull 1.6x-3.5x -> 1.4x-3.13x,
+// euphoria 1.3x-2x -> 1.2x-1.6x. accumulation/bear untouched.
 export const MACRO_CONFIG: Record<MacroPhase, MacroPhaseConfig> = {
   accumulation: { ...scaled(12, 32), totalMoveRange: [1 / 1.15, 1.15], volMultiplier: 0.85, fearGreedBase: 32, label: 'Зима', localCycleUpBias: 0.5 },
-  early_bull: { ...scaled(8, 20), totalMoveRange: [1.15, 1.6], volMultiplier: 0.93, fearGreedBase: 55, label: 'Восстановление', localCycleUpBias: 0.62 },
-  bull: { ...scaled(10, 24), totalMoveRange: [1.6, 3.5], volMultiplier: 1.10, fearGreedBase: 68, label: 'Бычий', localCycleUpBias: 0.72 },
-  euphoria: { ...scaled(2, 8), totalMoveRange: [1.3, 2], volMultiplier: 1.53, fearGreedBase: 88, label: 'Распределение', localCycleUpBias: 0.78 },
+  early_bull: { ...scaled(8, 20), totalMoveRange: [1.1, 1.4], volMultiplier: 0.93, fearGreedBase: 55, label: 'Восстановление', localCycleUpBias: 0.62 },
+  bull: { ...scaled(10, 24), totalMoveRange: [1.4, 3.13], volMultiplier: 1.10, fearGreedBase: 68, label: 'Бычий', localCycleUpBias: 0.72 },
+  euphoria: { ...scaled(2, 8), totalMoveRange: [1.2, 1.6], volMultiplier: 1.53, fearGreedBase: 88, label: 'Распределение', localCycleUpBias: 0.78 },
   bear: { ...scaled(8, 24), totalMoveRange: [0.35, 0.6], volMultiplier: 1.28, fearGreedBase: 18, label: 'Медвежий', localCycleUpBias: 0.25 },
 };
 
