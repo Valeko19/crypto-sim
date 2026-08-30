@@ -5,6 +5,7 @@ import { useMarketSocket } from '../hooks/useMarketSocket';
 import { CoinAvatar } from '../components/CoinAvatar';
 import { formatUsdd, formatPct, formatPctPlain, pctColorClass, formatQtyCompact } from '../lib/format';
 import { rankEmoji } from '../lib/rankVisuals';
+import { RankBadge } from '../components/RankBadge';
 import { ShareIcon, ChevronIcon } from '../components/icons';
 
 export function ProfileScreen() {
@@ -71,6 +72,11 @@ export function ProfileScreen() {
           </div>
           {leaguePlace != null && <div className="mt-1 text-xs text-muted">#{leaguePlace} в лиге</div>}
         </Link>
+      </div>
+
+      <div className="mt-6 flex flex-col items-center rounded-2xl border border-border bg-card-light py-4">
+        <RankBadge rank={current.rank} size={120} />
+        <div className="mt-1 text-sm font-medium text-muted">{current.rank}</div>
       </div>
 
       <h2 className="mb-2 mt-6 text-sm font-medium text-muted">Портфель</h2>
