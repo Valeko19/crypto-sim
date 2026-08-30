@@ -33,9 +33,18 @@ export function RankBadge({ rank, size = 120 }: RankBadgeProps) {
   // RiveComponent auto-sizes its canvas to its immediate parent (a
   // ResizeObserver under the hood) rather than to a style/width prop passed
   // directly to it — the sized wrapper here is what actually controls it.
+  // The `background: transparent` below is defensive (harmless for any
+  // correctly-authored file) but does NOT fix the dark square visible around
+  // shrimp_idle specifically — verified directly (sampled the canvas's own
+  // pixel data: fully opaque RGBA(40,40,40,255) even with this style already
+  // applied to both the canvas and its wrapper). That square is the
+  // artboard's own background fill baked into the .riv file itself, not
+  // something CSS or this component can remove — it needs the source file
+  // re-exported from the Rive editor with the artboard's background set to
+  // transparent (or its background fill shape deleted).
   return (
-    <div style={{ width: size, height: size }}>
-      <RiveComponent />
+    <div style={{ width: size, height: size, background: 'transparent' }}>
+      <RiveComponent style={{ background: 'transparent' }} />
     </div>
   );
 }
