@@ -88,13 +88,29 @@ export function sellCoin(pool: Pool, coinIn: number): TradeResult {
   };
 }
 
-// Reprice the pool to hit a target price directly, preserving k. Used for
-// background "virtual crowd" drift so macro/local cycles and noise can move
-// price through the exact same mechanism as a real trade.
-export function repriceTo(pool: Pool, targetPrice: number): void {
+// Reprice the pool to hit a target price directly, preserving k when
+// possible. Used for background "virtual crowd" drift (drift/noise/gravity/
+// news/homing) so macro/local cycles can move price through the exact same
+// mechanism as a real trade, without a real trade actually happening.
+//
+// `maxCoinReserve` is the coin's free float (emission * (1 - npcLockedPct)) —
+// the pool must never claim to hold more of the tradeable supply than
+// actually exists. A FALLING price's constant-product solution
+// (sqrt(k/targetPrice)) grows coinReserve without bound, which let it exceed
+// the free float on its own with no real trade involved — confirmed in
+// practice: a player captured 84.6% of HMFL's emission against a 84.0%
+// theoretical ceiling. When the unconstrained solution would exceed the cap,
+// clamp coinReserve to it directly and solve usddReserve from targetPrice
+// instead of from k — there's no real trade here whose k needs preserving,
+// so it's fine to break that invariant only in this clamped case.
+export function repriceTo(pool: Pool, targetPrice: number, maxCoinReserve: number): void {
   const kk = k(pool);
-  const newCoinReserve = Math.sqrt(kk / targetPrice);
-  const newUsddReserve = Math.sqrt(kk * targetPrice);
+  let newCoinReserve = Math.sqrt(kk / targetPrice);
+  let newUsddReserve = Math.sqrt(kk * targetPrice);
+  if (newCoinReserve > maxCoinReserve) {
+    newCoinReserve = maxCoinReserve;
+    newUsddReserve = targetPrice * maxCoinReserve;
+  }
   pool.coinReserve = newCoinReserve;
   pool.usddReserve = newUsddReserve;
 }

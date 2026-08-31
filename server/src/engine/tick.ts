@@ -598,7 +598,8 @@ export function tick(state: EngineState) {
 
     const currentPrice = price(cs.pool);
     const targetPrice = Math.max(currentPrice * (1 + totalPct / 100), currentPrice * 1e-6);
-    repriceTo(cs.pool, targetPrice);
+    const maxCoinReserve = cfg.emission * (1 - cfg.npcLockedPct);
+    repriceTo(cs.pool, targetPrice, maxCoinReserve);
 
     updateLiveliness(cs, now);
     updateCandle(cs, state);
