@@ -138,5 +138,31 @@ export async function initDb() {
       emission_earned_total DOUBLE PRECISION NOT NULL DEFAULT 0,
       rank_earned_total DOUBLE PRECISION NOT NULL DEFAULT 0
     );
+
+    -- Developer-only debugging log of every REAL trade (manual or bot-fired —
+    -- both go through the same engine/trade.ts execution path), so a bug like
+    -- a player ending up with more of a coin's emission than should be
+    -- mathematically possible can be traced from what actually happened
+    -- instead of re-derived from code alone. Deliberately separate from the
+    -- aggregated per-player counters above (trades_count/total_volume/etc,
+    -- which this does NOT replace) — this is the one intentional exception to
+    -- the project's general "no per-action history" stance, gated entirely
+    -- behind GET /api/admin/trade-log (see api/adminRoutes.ts), never exposed
+    -- to players. Old rows are pruned (see pruneOldTradeLogEntries in
+    -- db/queries.ts) so it can't grow unbounded.
+    CREATE TABLE IF NOT EXISTS trade_log (
+      id BIGSERIAL PRIMARY KEY,
+      player_id TEXT NOT NULL REFERENCES players(id),
+      coin_id TEXT NOT NULL,
+      side TEXT NOT NULL,
+      coin_amount DOUBLE PRECISION NOT NULL,
+      usdd_amount DOUBLE PRECISION NOT NULL,
+      price DOUBLE PRECISION NOT NULL,
+      fee DOUBLE PRECISION NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS trade_log_player_id_idx ON trade_log(player_id);
+    CREATE INDEX IF NOT EXISTS trade_log_coin_id_idx ON trade_log(coin_id);
+    CREATE INDEX IF NOT EXISTS trade_log_created_at_idx ON trade_log(created_at);
   `);
 }

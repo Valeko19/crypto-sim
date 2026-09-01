@@ -7,8 +7,9 @@ import { MACRO_CONFIG } from './engine/macroCycle.js';
 import { price } from './engine/amm.js';
 import { COINS } from './config/coins.js';
 import { initDb } from './db/index.js';
-import { getAllPoolSnapshots, savePoolSnapshot, getTotalHeldForCoin } from './db/queries.js';
+import { getAllPoolSnapshots, savePoolSnapshot, getTotalHeldForCoin, pruneOldTradeLogEntries } from './db/queries.js';
 import { createRouter } from './api/routes.js';
+import { createAdminRouter } from './api/adminRoutes.js';
 import { createWsServer } from './ws/server.js';
 import { computeAllPortfolios } from './api/helpers.js';
 import { distributeStakingRewards } from './engine/staking.js';
@@ -65,6 +66,14 @@ async function main() {
   const app = express();
   app.use(cors());
   app.use(express.json());
+  // Mounted BEFORE the main /api router and deliberately NOT behind
+  // resolvePlayer (see adminRoutes.ts) — must keep working in production
+  // with real player data. Registration order matters here: the main
+  // router's resolvePlayer is unconditional (`router.use`, no path) for
+  // anything under /api, including /api/admin/* if that were tried first —
+  // mounting admin first lets it fully handle its own path before the main
+  // router ever sees the request.
+  app.use('/api/admin', createAdminRouter());
   app.use('/api', createRouter(state));
 
   const httpServer = http.createServer(app);
@@ -122,6 +131,14 @@ async function main() {
   setInterval(() => {
     runTradingBots(state).catch(() => {});
   }, BOT_POLL_INTERVAL_MS);
+
+  // Keeps trade_log (see db/index.ts) from growing unbounded — once at boot
+  // covers a server that restarts often (dev), the daily interval covers one
+  // that doesn't (prod running for weeks between deploys).
+  pruneOldTradeLogEntries().catch(() => {});
+  setInterval(() => {
+    pruneOldTradeLogEntries().catch(() => {});
+  }, 24 * 60 * 60 * 1000);
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.on(signal, () => {

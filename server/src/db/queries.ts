@@ -73,6 +73,28 @@ export async function getHolding(playerId: string, coinId: string): Promise<Hold
   return res.rows[0] ?? null;
 }
 
+// Developer-only debugging log (see db/index.ts's trade_log table comment) —
+// never read by anything player-facing, only GET /api/admin/trade-log.
+// Fire-and-forget from the caller's perspective is NOT appropriate here since
+// applyBuy/applySell already await every other write in the same spirit; this
+// is just one more INSERT alongside them, same transaction-less convention
+// (no SQL transactions anywhere in this project — see other functions here).
+async function insertTradeLog(
+  playerId: string,
+  coinId: string,
+  side: 'buy' | 'sell',
+  coinAmount: number,
+  usddAmount: number,
+  execPrice: number,
+  feeAmount: number
+): Promise<void> {
+  await db.query(
+    `INSERT INTO trade_log (player_id, coin_id, side, coin_amount, usdd_amount, price, fee)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [playerId, coinId, side, coinAmount, usddAmount, execPrice, feeAmount]
+  );
+}
+
 export async function applyBuy(
   playerId: string,
   coinId: string,
@@ -100,6 +122,7 @@ export async function applyBuy(
      total_volume = total_volume + $1, total_fees_paid = total_fees_paid + $3 WHERE id = $2`,
     [usddSpent, playerId, feeAmount]
   );
+  await insertTradeLog(playerId, coinId, 'buy', coinAmount, usddSpent, execPrice, feeAmount);
 }
 
 export async function applySell(
@@ -128,6 +151,7 @@ export async function applySell(
      WHERE id = $3`,
     [usddReceived, realizedPnl, playerId, feeAmount]
   );
+  await insertTradeLog(playerId, coinId, 'sell', coinAmount, usddReceived, execPrice, feeAmount);
 }
 
 export interface QuestProgressRow {
@@ -493,4 +517,55 @@ export async function reservedStakedAmount(playerId: string, coinId: string): Pr
     if (isPositionReserved(p, now)) reserved += p.amount;
   }
   return reserved;
+}
+
+// --- Trade log (developer debugging only — see db/index.ts's table comment) -
+
+export interface TradeLogRow {
+  id: number;
+  player_id: string;
+  coin_id: string;
+  side: 'buy' | 'sell';
+  coin_amount: number;
+  usdd_amount: number;
+  price: number;
+  fee: number;
+  created_at: string;
+}
+
+export interface TradeLogFilter {
+  playerId?: string;
+  coinId?: string;
+  limit: number;
+}
+
+export async function getTradeLog(filter: TradeLogFilter): Promise<TradeLogRow[]> {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  if (filter.playerId) {
+    params.push(filter.playerId);
+    conditions.push(`player_id = $${params.length}`);
+  }
+  if (filter.coinId) {
+    params.push(filter.coinId);
+    conditions.push(`coin_id = $${params.length}`);
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  params.push(filter.limit);
+  const res = await db.query<TradeLogRow>(
+    `SELECT * FROM trade_log ${where} ORDER BY created_at DESC, id DESC LIMIT $${params.length}`,
+    params
+  );
+  return res.rows;
+}
+
+const TRADE_LOG_RETENTION_DAYS = 30;
+
+// The project deliberately avoided a full trade history specifically because
+// of unbounded growth — this is the one safeguard that lets trade_log exist
+// without reintroducing that problem. Called once at boot and on a daily
+// interval (see index.ts) rather than needing anything fancier; a debug log
+// that's occasionally a few hours late to prune a stale row is fine.
+export async function pruneOldTradeLogEntries(): Promise<void> {
+  await db.query(`DELETE FROM trade_log WHERE created_at < now() - interval '${TRADE_LOG_RETENTION_DAYS} days'`);
 }
