@@ -20,6 +20,7 @@ export function rankEmoji(name: string): string {
 // component changes (see RankBadge, which falls back to the static emoji
 // above for any rank not listed here yet).
 export const RANK_ANIMATIONS: Record<string, string> = {
+  'Планктон': '/ranks/plankton_idle.riv',
   'Креветка': '/ranks/shrimp_idle.riv',
 };
 
