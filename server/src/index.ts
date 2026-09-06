@@ -4,7 +4,7 @@ import http from 'node:http';
 import { createInitialState, recentChangePct, Candle } from './engine/state.js';
 import { startEngineLoop, fearGreedLabel, phaseProgress } from './engine/tick.js';
 import { MACRO_CONFIG } from './engine/macroCycle.js';
-import { price } from './engine/amm.js';
+import { price, maxTradeableReserve } from './engine/amm.js';
 import { COINS } from './config/coins.js';
 import { initDb } from './db/index.js';
 import { getAllPoolSnapshots, savePoolSnapshot, getTotalHeldForCoin, pruneOldTradeLogEntries } from './db/queries.js';
@@ -44,7 +44,7 @@ async function main() {
     const cs = state.coins[cfg.id];
     const reachable = cfg.emission * (1 - cfg.npcLockedPct);
     const totalHeld = await getTotalHeldForCoin(cfg.id);
-    const maxAllowedReserve = Math.max(reachable - totalHeld, reachable * 0.0005);
+    const maxAllowedReserve = maxTradeableReserve(reachable, totalHeld);
     if (cs.pool.coinReserve > maxAllowedReserve) {
       const currentPrice = price(cs.pool);
       cs.pool.coinReserve = maxAllowedReserve;

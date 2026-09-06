@@ -1,4 +1,13 @@
-export function formatCompact(n: number): string {
+// Placeholder shown instead of throwing when a value is missing/non-finite
+// (e.g. a coin's price briefly serialized as null over the wire — NaN has no
+// JSON representation, so JSON.stringify turns it into null) — a single bad
+// value used to crash this function's whole call site (n.toFixed on null),
+// taking down an entire list render (e.g. MarketScreen's coin list) instead
+// of just that one row.
+const PLACEHOLDER = '—';
+
+export function formatCompact(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return PLACEHOLDER;
   if (n === 0) return '0';
   const abs = Math.abs(n);
   if (abs >= 1e12) return (n / 1e12).toFixed(1) + 'T';
@@ -8,7 +17,8 @@ export function formatCompact(n: number): string {
   return n.toFixed(0);
 }
 
-export function formatPrice(n: number): string {
+export function formatPrice(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return PLACEHOLDER;
   const abs = Math.abs(n);
   if (abs === 0) return '0';
   if (abs >= 1000) return n.toLocaleString('ru-RU', { maximumFractionDigits: 0 });
@@ -20,20 +30,23 @@ export function formatPrice(n: number): string {
   return n.toLocaleString('ru-RU', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
 }
 
-export function formatUsdd(n: number): string {
+export function formatUsdd(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return PLACEHOLDER;
   if (n === 0) return '$0';
   const sign = n < 0 ? '-' : '';
   return `${sign}$${Math.abs(n).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-export function formatPct(n: number, digits = 1): string {
+export function formatPct(n: number | null | undefined, digits = 1): string {
+  if (n == null || !Number.isFinite(n)) return PLACEHOLDER;
   const sign = n > 0 ? '+' : '';
   return `${sign}${n.toFixed(digits)}%`;
 }
 
 // Plain (unsigned, no +/-) percentage — e.g. "% of emission owned". Distinct
 // from formatPct, which is for signed price/PnL deltas and always shows a sign.
-export function formatPctPlain(n: number, digits = 1): string {
+export function formatPctPlain(n: number | null | undefined, digits = 1): string {
+  if (n == null || !Number.isFinite(n)) return PLACEHOLDER;
   return `${n.toFixed(digits)}%`;
 }
 
@@ -65,7 +78,8 @@ export function formatDurationLong(totalSec: number): string {
 // Decimals scale with the coin's own price tier — pricier coins are held in
 // smaller quantities where extra fractional digits still carry real value,
 // cheap coins are held in bulk where they're just noise.
-export function formatQty(amount: number, price: number): string {
+export function formatQty(amount: number | null | undefined, price: number): string {
+  if (amount == null || !Number.isFinite(amount)) return PLACEHOLDER;
   if (amount === 0) return '0';
   let decimals = 0;
   if (price > 10_000) decimals = 4;
@@ -81,7 +95,8 @@ export function formatQty(amount: number, price: number): string {
 // block), but falls back to formatQty's price-tier fractional precision below
 // 1000 so a real fractional holding of an expensive coin (e.g. 0.5 BTCR)
 // never rounds away to "0" or "1".
-export function formatQtyCompact(amount: number, price: number): string {
+export function formatQtyCompact(amount: number | null | undefined, price: number): string {
+  if (amount == null || !Number.isFinite(amount)) return PLACEHOLDER;
   if (amount === 0) return '0';
   if (Math.abs(amount) >= 1e3) return formatCompact(amount);
   return formatQty(amount, price);

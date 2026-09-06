@@ -1,6 +1,6 @@
 import { EngineState, CoinState, MacroMode, CANDLE_INTERVAL_MS, MAX_CANDLES, RECENT_CHANGE_WINDOW_MS } from './state.js';
 import { MACRO_CONFIG, MacroPhase, nextPhase, fearGreedLabel } from './macroCycle.js';
-import { repriceTo, price } from './amm.js';
+import { repriceTo, price, maxTradeableReserve } from './amm.js';
 import { gravityPctPerMin } from './gravity.js';
 import { logReturnToDriftPctPerMin } from './driftMath.js';
 import { maybeTriggerNews, newsDriftContribution, advanceNewsEvent } from './news.js';
@@ -604,8 +604,11 @@ export function tick(state: EngineState) {
     // float even after coins had already been sold out of the pool permanently,
     // effectively re-issuing supply that was already someone's holdings — measured
     // to push cumulative ownership past 100% of TOTAL emission (not just the free
-    // float) after only a few large-buy/price-drop cycles.
-    const maxCoinReserve = Math.max(0, cfg.emission * (1 - cfg.npcLockedPct) - cs.playerOwnedCoins);
+    // float) after only a few large-buy/price-drop cycles. maxTradeableReserve
+    // additionally floors this at a small fraction of the free float instead of
+    // letting it hit exactly 0 — see its own comment in amm.ts for why (a bare
+    // Math.max(0, ...) here permanently NaN-locks the pool's price).
+    const maxCoinReserve = maxTradeableReserve(cfg.emission * (1 - cfg.npcLockedPct), cs.playerOwnedCoins);
     repriceTo(cs.pool, targetPrice, maxCoinReserve);
 
     updateLiveliness(cs, now);

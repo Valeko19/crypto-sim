@@ -115,6 +115,26 @@ export function repriceTo(pool: Pool, targetPrice: number, maxCoinReserve: numbe
   pool.usddReserve = newUsddReserve;
 }
 
+// Floor on repriceTo's cap, as a fraction of the free float — without this,
+// a coin whose already-sold holdings (alreadyHeld) reach or exceed the free
+// float clamps straight to 0, and since repriceTo sets BOTH coinReserve and
+// usddReserve to that same value when the cap binds, the pool permanently
+// locks at coinReserve=0/usddReserve=0 -> price() = 0/0 = NaN forever (no
+// later tick can ever recover it, since k=0 stays 0). JSON.stringify turns
+// that NaN into null on the wire, which crashed the client's list rendering
+// (formatPct/formatCompact calling .toFixed on a null price/changePct).
+// Confirmed via a diagnostic script: a coin already inflated past its free
+// float by the (now-fixed) unbounded-repriceTo bug hit this exact zero-lock
+// on the very first tick after the fix was deployed.
+const MIN_POOL_RESERVE_FRACTION = 0.0005;
+
+// Shared by tick.ts (repriceTo's per-tick cap) and index.ts (the boot-time
+// snapshot safety net) so both always agree on the same floor — they used to
+// compute this independently and drifted out of sync (see MIN_POOL_RESERVE_FRACTION above).
+export function maxTradeableReserve(freeFloat: number, alreadyHeld: number): number {
+  return Math.max(freeFloat - alreadyHeld, freeFloat * MIN_POOL_RESERVE_FRACTION);
+}
+
 export function quoteBuy(pool: Pool, usddIn: number): { coinOut: number; avgPrice: number; priceImpactPct: number } {
   const priceBefore = price(pool);
   const kk = k(pool);
