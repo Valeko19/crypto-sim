@@ -598,7 +598,14 @@ export function tick(state: EngineState) {
 
     const currentPrice = price(cs.pool);
     const targetPrice = Math.max(currentPrice * (1 + totalPct / 100), currentPrice * 1e-6);
-    const maxCoinReserve = cfg.emission * (1 - cfg.npcLockedPct);
+    // The cap must shrink as real trades sell coins to players — cs.playerOwnedCoins
+    // already tracks that running total (see trade.ts). Using the STATIC free float
+    // here let a falling price re-inflate coinReserve back toward the full free
+    // float even after coins had already been sold out of the pool permanently,
+    // effectively re-issuing supply that was already someone's holdings — measured
+    // to push cumulative ownership past 100% of TOTAL emission (not just the free
+    // float) after only a few large-buy/price-drop cycles.
+    const maxCoinReserve = Math.max(0, cfg.emission * (1 - cfg.npcLockedPct) - cs.playerOwnedCoins);
     repriceTo(cs.pool, targetPrice, maxCoinReserve);
 
     updateLiveliness(cs, now);
