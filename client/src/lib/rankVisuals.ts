@@ -22,6 +22,13 @@ export function rankEmoji(name: string): string {
 export const RANK_ANIMATIONS: Record<string, string> = {
   'Планктон': '/ranks/plankton_idle.riv',
   'Креветка': '/ranks/shrimp_idle.riv',
+  'Краб': '/ranks/crab_idle.riv',
+  'Осьминог': '/ranks/octopus_idle.riv',
+  'Дельфин': '/ranks/dolphin_idle.riv',
+  'Акула': '/ranks/shark_idle.riv',
+  'Касатка': '/ranks/orca_idle.riv',
+  'Кит': '/ranks/whale_idle.riv',
+  'Кракен': '/ranks/kraken_idle.riv',
 };
 
 export function rankAnimationSrc(name: string): string | null {
