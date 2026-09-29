@@ -1,5 +1,5 @@
 import { EngineState } from './state.js';
-import { buyWithUsdd, sellCoin, price } from './amm.js';
+import { buyWithUsdd, sellCoin, price, isFinitePositiveAmount } from './amm.js';
 import { COIN_MAP, tradeFeePct, MIN_TRADE_USDD } from '../config/coins.js';
 import { ensurePlayerExists, getPlayer, applyBuy, applySell, getHolding, reservedStakedAmount } from '../db/queries.js';
 import { recordTradeVolume } from './dailyVolume.js';
@@ -40,6 +40,27 @@ async function executeTradeUnlocked(state: EngineState, playerId: string, params
   const cs = state.coins[coinId];
   const cfg = COIN_MAP[coinId];
   if (!cs || !cfg) throw new TradeError('coin not found', 404);
+  if (side !== 'buy' && side !== 'sell') throw new TradeError('side must be buy or sell');
+  if (useMax !== undefined && typeof useMax !== 'boolean') throw new TradeError('invalid amount');
+  if (amountUsdd !== undefined && !isFinitePositiveAmount(amountUsdd)) throw new TradeError('invalid amount');
+  if (amountCoin !== undefined && !isFinitePositiveAmount(amountCoin)) throw new TradeError('invalid amount');
+
+  let buyAmount: number | undefined;
+  let sellCoinAmount: number | undefined;
+  let sellUsddAmount: number | undefined;
+  if (side === 'buy') {
+    if (!isFinitePositiveAmount(amountUsdd)) throw new TradeError('invalid amount');
+    if (amountUsdd < MIN_TRADE_USDD) throw new TradeError(`minimum trade is ${MIN_TRADE_USDD} USDD`);
+    buyAmount = amountUsdd;
+  } else if (useMax) {
+    // Explicit amounts are still validated above even though max sell uses the
+    // server's own current sellable balance instead of either client amount.
+  } else if (amountCoin !== undefined) {
+    sellCoinAmount = amountCoin;
+  } else {
+    if (amountUsdd === undefined) throw new TradeError('invalid amount');
+    sellUsddAmount = amountUsdd;
+  }
 
   // Runs both from the /trade route (already ensured by the auth middleware)
   // and the trading-bot background job (outside any request/handshake, where
@@ -49,8 +70,8 @@ async function executeTradeUnlocked(state: EngineState, playerId: string, params
   const player = await getPlayer(playerId);
 
   if (side === 'buy') {
-    const usddIn = Number(amountUsdd);
-    if (!usddIn || usddIn < MIN_TRADE_USDD) throw new TradeError(`minimum trade is ${MIN_TRADE_USDD} USDD`);
+    const usddIn = buyAmount!;
+    if (!Number.isFinite(player.usdd_balance)) throw new TradeError('invalid balance');
     if (usddIn > player.usdd_balance) throw new TradeError('insufficient balance');
     const fee = usddIn * tradeFeePct(coinId);
     const netIn = usddIn - fee;
@@ -69,20 +90,23 @@ async function executeTradeUnlocked(state: EngineState, playerId: string, params
     return { ...result, fee: actualFee };
   } else if (side === 'sell') {
     const holding = await getHolding(playerId, coinId);
-    if (!holding || holding.amount <= 0) throw new TradeError('no holding to sell');
+    if (!holding || !isFinitePositiveAmount(holding.amount)) throw new TradeError('no holding to sell');
     const reserved = await reservedStakedAmount(playerId, coinId);
+    if (!Number.isFinite(reserved) || reserved < 0) throw new TradeError('invalid holding');
     const sellable = holding.amount - reserved;
     let coinIn: number;
     if (useMax) {
       coinIn = sellable;
-    } else if (amountCoin != null) {
-      coinIn = Number(amountCoin);
+    } else if (sellCoinAmount !== undefined) {
+      coinIn = sellCoinAmount;
     } else {
-      coinIn = Number(amountUsdd) / price(cs.pool);
+      const currentPrice = price(cs.pool);
+      if (!isFinitePositiveAmount(currentPrice)) throw new TradeError('invalid market price');
+      coinIn = sellUsddAmount! / currentPrice;
     }
+    if (!isFinitePositiveAmount(coinIn) || !isFinitePositiveAmount(sellable)) throw new TradeError('invalid amount');
     if (coinIn > sellable) throw new TradeError('coins are staked and cannot be sold');
     coinIn = Math.min(coinIn, sellable);
-    if (coinIn <= 0) throw new TradeError('invalid amount');
     const result = sellCoin(cs.pool, coinIn);
     const fee = result.usddAmount * tradeFeePct(coinId);
     const netOut = result.usddAmount - fee;

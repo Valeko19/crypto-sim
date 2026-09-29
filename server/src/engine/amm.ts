@@ -13,6 +13,26 @@ export function k(pool: Pool): number {
   return pool.coinReserve * pool.usddReserve;
 }
 
+export function isFinitePositiveAmount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
+function assertValidPool(pool: Pool): { priceBefore: number; invariant: number } {
+  if (!isFinitePositiveAmount(pool.coinReserve) || !isFinitePositiveAmount(pool.usddReserve)) {
+    throw new RangeError('AMM reserves must be finite positive numbers');
+  }
+  const priceBefore = price(pool);
+  const invariant = k(pool);
+  if (!isFinitePositiveAmount(priceBefore) || !isFinitePositiveAmount(invariant)) {
+    throw new RangeError('AMM price and invariant must be finite positive numbers');
+  }
+  return { priceBefore, invariant };
+}
+
+function assertFinitePositiveResult(value: number, label: string): void {
+  if (!isFinitePositiveAmount(value)) throw new RangeError(`${label} must be finite and positive`);
+}
+
 export interface TradeResult {
   coinAmount: number;
   usddAmount: number;
@@ -27,8 +47,8 @@ export interface TradeResult {
 const MAX_RESERVE_FRACTION = 0.3;
 
 export function buyWithUsdd(pool: Pool, usddIn: number): TradeResult {
-  const priceBefore = price(pool);
-  const kk = k(pool);
+  if (!isFinitePositiveAmount(usddIn)) throw new RangeError('USDD input must be a finite positive number');
+  const { priceBefore, invariant: kk } = assertValidPool(pool);
   const newUsddReserve = pool.usddReserve + usddIn;
   const newCoinReserve = kk / newUsddReserve;
   let coinOut = pool.coinReserve - newCoinReserve;
@@ -49,17 +69,25 @@ export function buyWithUsdd(pool: Pool, usddIn: number): TradeResult {
     const cappedNewUsddReserve = kk / cappedNewCoinReserve;
     usddSpent = cappedNewUsddReserve - pool.usddReserve;
   }
-  pool.coinReserve -= coinOut;
-  pool.usddReserve += usddSpent;
-  const priceAfter = price(pool);
+  const nextCoinReserve = pool.coinReserve - coinOut;
+  const nextUsddReserve = pool.usddReserve + usddSpent;
+  assertFinitePositiveResult(nextCoinReserve, 'coin reserve');
+  assertFinitePositiveResult(nextUsddReserve, 'USDD reserve');
+  const priceAfter = nextUsddReserve / nextCoinReserve;
+  assertFinitePositiveResult(priceAfter, 'price');
   const avgPrice = usddSpent / coinOut;
+  assertFinitePositiveResult(avgPrice, 'average price');
+  const slippagePct = (avgPrice / priceBefore - 1) * 100;
+  if (!Number.isFinite(slippagePct)) throw new RangeError('slippage must be finite');
+  pool.coinReserve = nextCoinReserve;
+  pool.usddReserve = nextUsddReserve;
   return {
     coinAmount: coinOut,
     usddAmount: usddSpent,
     avgPrice,
     priceBefore,
     priceAfter,
-    slippagePct: (avgPrice / priceBefore - 1) * 100,
+    slippagePct,
   };
 }
 
@@ -68,23 +96,33 @@ export function buyWithUsdd(pool: Pool, usddIn: number): TradeResult {
 // get updated with below — so k stays exactly preserved on its own; there is
 // no equivalent bug here to fix, just confirming it via the same audit.
 export function sellCoin(pool: Pool, coinIn: number): TradeResult {
-  const priceBefore = price(pool);
-  const kk = k(pool);
+  if (!isFinitePositiveAmount(coinIn)) throw new RangeError('coin input must be a finite positive number');
+  const { priceBefore, invariant: kk } = assertValidPool(pool);
   const cappedCoinIn = Math.min(coinIn, pool.coinReserve * MAX_RESERVE_FRACTION);
+  assertFinitePositiveResult(cappedCoinIn, 'executed coin amount');
   const newCoinReserve = pool.coinReserve + cappedCoinIn;
   const newUsddReserve = kk / newCoinReserve;
   const usddOut = pool.usddReserve - newUsddReserve;
-  pool.coinReserve += cappedCoinIn;
-  pool.usddReserve -= usddOut;
-  const priceAfter = price(pool);
+  if (!Number.isFinite(usddOut) || usddOut < 0) throw new RangeError('USDD output must be finite and non-negative');
+  const nextCoinReserve = pool.coinReserve + cappedCoinIn;
+  const nextUsddReserve = pool.usddReserve - usddOut;
+  assertFinitePositiveResult(nextCoinReserve, 'coin reserve');
+  assertFinitePositiveResult(nextUsddReserve, 'USDD reserve');
+  const priceAfter = nextUsddReserve / nextCoinReserve;
+  assertFinitePositiveResult(priceAfter, 'price');
   const avgPrice = usddOut / cappedCoinIn;
+  if (!Number.isFinite(avgPrice)) throw new RangeError('average price must be finite');
+  const slippagePct = (avgPrice / priceBefore - 1) * 100;
+  if (!Number.isFinite(slippagePct)) throw new RangeError('slippage must be finite');
+  pool.coinReserve = nextCoinReserve;
+  pool.usddReserve = nextUsddReserve;
   return {
     coinAmount: cappedCoinIn,
     usddAmount: usddOut,
     avgPrice,
     priceBefore,
     priceAfter,
-    slippagePct: (avgPrice / priceBefore - 1) * 100,
+    slippagePct,
   };
 }
 
@@ -136,21 +174,29 @@ export function maxTradeableReserve(freeFloat: number, alreadyHeld: number): num
 }
 
 export function quoteBuy(pool: Pool, usddIn: number): { coinOut: number; avgPrice: number; priceImpactPct: number } {
-  const priceBefore = price(pool);
-  const kk = k(pool);
+  if (!isFinitePositiveAmount(usddIn)) throw new RangeError('USDD input must be a finite positive number');
+  const { priceBefore, invariant: kk } = assertValidPool(pool);
   const newUsddReserve = pool.usddReserve + usddIn;
   const newCoinReserve = kk / newUsddReserve;
   const coinOut = pool.coinReserve - newCoinReserve;
   const avgPrice = usddIn / coinOut;
-  return { coinOut, avgPrice, priceImpactPct: (avgPrice / priceBefore - 1) * 100 };
+  assertFinitePositiveResult(coinOut, 'quoted coin output');
+  assertFinitePositiveResult(avgPrice, 'quoted average price');
+  const priceImpactPct = (avgPrice / priceBefore - 1) * 100;
+  if (!Number.isFinite(priceImpactPct)) throw new RangeError('price impact must be finite');
+  return { coinOut, avgPrice, priceImpactPct };
 }
 
 export function quoteSell(pool: Pool, coinIn: number): { usddOut: number; avgPrice: number; priceImpactPct: number } {
-  const priceBefore = price(pool);
-  const kk = k(pool);
+  if (!isFinitePositiveAmount(coinIn)) throw new RangeError('coin input must be a finite positive number');
+  const { priceBefore, invariant: kk } = assertValidPool(pool);
   const newCoinReserve = pool.coinReserve + coinIn;
   const newUsddReserve = kk / newCoinReserve;
   const usddOut = pool.usddReserve - newUsddReserve;
   const avgPrice = usddOut / coinIn;
-  return { usddOut, avgPrice, priceImpactPct: (avgPrice / priceBefore - 1) * 100 };
+  if (!Number.isFinite(usddOut) || usddOut < 0) throw new RangeError('quoted USDD output must be finite and non-negative');
+  if (!Number.isFinite(avgPrice)) throw new RangeError('quoted average price must be finite');
+  const priceImpactPct = (avgPrice / priceBefore - 1) * 100;
+  if (!Number.isFinite(priceImpactPct)) throw new RangeError('price impact must be finite');
+  return { usddOut, avgPrice, priceImpactPct };
 }

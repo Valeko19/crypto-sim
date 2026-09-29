@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { EngineState, recentChangePct } from '../engine/state.js';
-import { price } from '../engine/amm.js';
-import { quoteBuy, quoteSell } from '../engine/amm.js';
+import { quoteBuy, quoteSell, isFinitePositiveAmount, price } from '../engine/amm.js';
 import { executeTrade, TradeError } from '../engine/trade.js';
 import { forcePhase, fearGreedLabel, phaseProgress, tick } from '../engine/tick.js';
 import { justifiedPrice } from '../engine/gravity.js';
@@ -78,22 +77,37 @@ export function createRouter(state: EngineState) {
     const { coinId, side, amountUsdd, amountCoin } = req.body;
     const cs = state.coins[coinId];
     if (!cs) return res.status(404).json({ error: 'coin not found' });
-    try {
-      if (side === 'buy') {
-        const usddIn = Number(amountUsdd);
-        const feeAmount = usddIn * tradeFeePct(coinId);
-        const q = quoteBuy(cs.pool, usddIn - feeAmount);
-        res.json({ expectedCoinOut: q.coinOut, avgPrice: q.avgPrice, priceImpactPct: q.priceImpactPct, feeAmount, feePct: tradeFeePct(coinId) });
-      } else {
-        let coinIn: number;
-        if (amountCoin != null) coinIn = Number(amountCoin);
-        else coinIn = Number(amountUsdd) / price(cs.pool);
-        const q = quoteSell(cs.pool, coinIn);
-        const feeAmount = q.usddOut * tradeFeePct(coinId);
-        res.json({ expectedUsddOut: q.usddOut - feeAmount, avgPrice: q.avgPrice, priceImpactPct: q.priceImpactPct, feeAmount, feePct: tradeFeePct(coinId) });
+    if (amountUsdd !== undefined && !isFinitePositiveAmount(amountUsdd)) return res.status(400).json({ error: 'invalid amount' });
+    if (amountCoin !== undefined && !isFinitePositiveAmount(amountCoin)) return res.status(400).json({ error: 'invalid amount' });
+    if (side === 'buy') {
+      if (amountUsdd === undefined) return res.status(400).json({ error: 'invalid amount' });
+      try {
+        const feeAmount = amountUsdd * tradeFeePct(coinId);
+        const q = quoteBuy(cs.pool, amountUsdd - feeAmount);
+        return res.json({ expectedCoinOut: q.coinOut, avgPrice: q.avgPrice, priceImpactPct: q.priceImpactPct, feeAmount, feePct: tradeFeePct(coinId) });
+      } catch {
+        return res.status(400).json({ error: 'quote failed' });
       }
-    } catch (e) {
-      res.status(400).json({ error: 'quote failed' });
+    }
+    if (side !== 'sell') return res.status(400).json({ error: 'side must be buy or sell' });
+
+    let coinIn: number;
+    if (amountCoin !== undefined) {
+      coinIn = amountCoin;
+    } else {
+      if (amountUsdd === undefined) return res.status(400).json({ error: 'invalid amount' });
+      const currentPrice = price(cs.pool);
+      if (!isFinitePositiveAmount(currentPrice)) return res.status(400).json({ error: 'quote failed' });
+      coinIn = amountUsdd / currentPrice;
+      if (!isFinitePositiveAmount(coinIn)) return res.status(400).json({ error: 'invalid amount' });
+    }
+
+    try {
+      const q = quoteSell(cs.pool, coinIn);
+      const feeAmount = q.usddOut * tradeFeePct(coinId);
+      return res.json({ expectedUsddOut: q.usddOut - feeAmount, avgPrice: q.avgPrice, priceImpactPct: q.priceImpactPct, feeAmount, feePct: tradeFeePct(coinId) });
+    } catch {
+      return res.status(400).json({ error: 'quote failed' });
     }
   });
 
