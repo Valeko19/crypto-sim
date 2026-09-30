@@ -1,5 +1,5 @@
 import { EngineState } from './state.js';
-import { buyWithUsdd, sellCoin, price, isFinitePositiveAmount } from './amm.js';
+import { buyWithUsdd, sellCoin, quoteSellExecution, price, isFinitePositiveAmount } from './amm.js';
 import { COIN_MAP, tradeFeePct, MIN_TRADE_USDD } from '../config/coins.js';
 import { ensurePlayerExists, getPlayer, applyBuy, applySell, getHolding, reservedStakedAmount } from '../db/queries.js';
 import { recordTradeVolume } from './dailyVolume.js';
@@ -107,6 +107,10 @@ async function executeTradeUnlocked(state: EngineState, playerId: string, params
     if (!isFinitePositiveAmount(coinIn) || !isFinitePositiveAmount(sellable)) throw new TradeError('invalid amount');
     if (coinIn > sellable) throw new TradeError('coins are staked and cannot be sold');
     coinIn = Math.min(coinIn, sellable);
+    const grossUsddOut = quoteSellExecution(cs.pool, coinIn).usddAmount;
+    if (grossUsddOut < MIN_TRADE_USDD) {
+      throw new TradeError(`minimum trade size is ${MIN_TRADE_USDD} USDD`);
+    }
     const result = sellCoin(cs.pool, coinIn);
     const fee = result.usddAmount * tradeFeePct(coinId);
     const netOut = result.usddAmount - fee;

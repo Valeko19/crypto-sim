@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import express from 'express';
 import { createServer, Server } from 'node:http';
+import { MIN_TRADE_USDD } from '../../src/config/coins.js';
 
 const originalPgDataDir = process.env.PGDATA_DIR;
 const originalNodeEnv = process.env.NODE_ENV;
@@ -15,7 +16,7 @@ const { initDb, db } = await import('../../src/db/index.js');
 const { createInitialState } = await import('../../src/engine/state.js');
 const { createRouter } = await import('../../src/api/routes.js');
 const { executeTrade, TradeError } = await import('../../src/engine/trade.js');
-const { buyWithUsdd, sellCoin, quoteBuy, quoteSell, price } = await import('../../src/engine/amm.js');
+const { buyWithUsdd, sellCoin, quoteBuy, quoteSell, quoteSellExecution, price } = await import('../../src/engine/amm.js');
 
 const omitted = Symbol('omitted');
 const invalidHttpValues: unknown[] = ['abc', '', null, omitted, {}, [], ['1'], '100'];
@@ -69,6 +70,10 @@ async function snapshot(player: string) {
      WHERE p.id = $2`,
     [coinId, player],
   );
+  const tradeLog = await db.query<{ count: number }>(
+    'SELECT COUNT(*)::int AS count FROM trade_log WHERE player_id = $1',
+    [player],
+  );
   const row = query.rows[0];
   const pool = state.coins[coinId].pool;
   return {
@@ -82,6 +87,7 @@ async function snapshot(player: string) {
     totalVolume: row.total_volume,
     totalFeesPaid: row.total_fees_paid,
     realizedPnl: row.realized_pnl,
+    tradeLogCount: tradeLog.rows[0].count,
   };
 }
 
@@ -93,6 +99,22 @@ function withAmount(side: 'buy' | 'sell', field: 'amountUsdd' | 'amountCoin', va
   const body: Record<string, unknown> = { coinId, side };
   if (value !== omitted) body[field] = value;
   return body;
+}
+
+function amountForGrossOutput(
+  pool: { coinReserve: number; usddReserve: number },
+  maxCoinAmount: number,
+  target: number
+): number {
+  assert.ok(quoteSellExecution(pool, maxCoinAmount).usddAmount >= target);
+  let low = 0;
+  let high = maxCoinAmount;
+  for (let i = 0; i < 80; i++) {
+    const mid = (low + high) / 2;
+    if (quoteSellExecution(pool, mid).usddAmount < target) low = mid;
+    else high = mid;
+  }
+  return high;
 }
 
 async function main(): Promise<void> {
@@ -131,6 +153,9 @@ async function main(): Promise<void> {
     for (const value of invalidNumbers) {
       assert.throws(() => quoteBuy({ coinReserve: 100, usddReserve: 200 }, value));
       assert.throws(() => quoteSell({ coinReserve: 100, usddReserve: 200 }, value));
+      const pool = { coinReserve: 100, usddReserve: 200 };
+      assert.throws(() => quoteSellExecution(pool, value));
+      assert.deepEqual(pool, { coinReserve: 100, usddReserve: 200 });
     }
   });
 
@@ -242,6 +267,104 @@ async function main(): Promise<void> {
     }
   });
 
+  await run('BUY rejects below MIN_TRADE_USDD and allows the boundary', async () => {
+    for (const amount of [0.01, 0.99, MIN_TRADE_USDD - Number.EPSILON]) {
+      resetState();
+      const player = playerId();
+      await http('GET', player, '/portfolio');
+      const before = await snapshot(player);
+      const quote = await http('POST', player, '/trade/quote', { coinId, side: 'buy', amountUsdd: amount });
+      assert.equal(quote.status, 400);
+      assert.match(String(quote.body.error), /minimum trade size/i);
+      assert.deepEqual(await snapshot(player), before);
+      const trade = await http('POST', player, '/trade', { coinId, side: 'buy', amountUsdd: amount });
+      assert.equal(trade.status, 400);
+      assert.deepEqual(await snapshot(player), before);
+      await assert.rejects(
+        executeTrade(state, player, { coinId, side: 'buy', amountUsdd: amount }),
+        TradeError,
+      );
+      assert.deepEqual(await snapshot(player), before);
+    }
+
+    for (const amount of [MIN_TRADE_USDD, 1.01, 100]) {
+      resetState();
+      const player = playerId();
+      const quote = await http('POST', player, '/trade/quote', { coinId, side: 'buy', amountUsdd: amount });
+      assert.equal(quote.status, 200);
+      const trade = await http('POST', player, '/trade', { coinId, side: 'buy', amountUsdd: amount });
+      assert.equal(trade.status, 200);
+      assert.equal((await snapshot(player)).tradesCount, 1);
+    }
+  });
+
+  await run('SELL requires at least MIN_TRADE_USDD gross AMM output', async () => {
+    resetState();
+    const player = playerId();
+    const seeded = await http('POST', player, '/trade', { coinId, side: 'buy', amountUsdd: 10 });
+    assert.equal(seeded.status, 200);
+
+    for (const coinAmount of [1e-100, amountForGrossOutput(state.coins[coinId].pool, (await snapshot(player)).holding, MIN_TRADE_USDD - 0.01)]) {
+      const before = await snapshot(player);
+      assert.ok(quoteSellExecution(state.coins[coinId].pool, coinAmount).usddAmount < MIN_TRADE_USDD);
+
+      const quote = await http('POST', player, '/trade/quote', { coinId, side: 'sell', amountCoin: coinAmount });
+      assert.equal(quote.status, 400);
+      assert.deepEqual(await snapshot(player), before);
+
+      await assert.rejects(
+        executeTrade(state, player, { coinId, side: 'sell', amountCoin: coinAmount }),
+        TradeError,
+      );
+      assert.deepEqual(await snapshot(player), before);
+
+      const trade = await http('POST', player, '/trade', { coinId, side: 'sell', amountCoin: coinAmount });
+      assert.equal(trade.status, 400);
+      assert.match(String(trade.body.error), /minimum trade size/i);
+      assert.deepEqual(await snapshot(player), before);
+    }
+
+    const belowCoinAmount = amountForGrossOutput(
+      state.coins[coinId].pool,
+      (await snapshot(player)).holding,
+      MIN_TRADE_USDD - 0.01,
+    );
+    const belowUsddAmount = belowCoinAmount * price(state.coins[coinId].pool);
+    const belowUsddCoinInput = belowUsddAmount / price(state.coins[coinId].pool);
+    assert.ok(quoteSellExecution(state.coins[coinId].pool, belowUsddCoinInput).usddAmount < MIN_TRADE_USDD);
+    const beforeBelowUsdd = await snapshot(player);
+    const quoteBelowUsdd = await http('POST', player, '/trade/quote', { coinId, side: 'sell', amountUsdd: belowUsddAmount });
+    assert.equal(quoteBelowUsdd.status, 400);
+    const tradeBelowUsdd = await http('POST', player, '/trade', { coinId, side: 'sell', amountUsdd: belowUsddAmount });
+    assert.equal(tradeBelowUsdd.status, 400);
+    assert.deepEqual(await snapshot(player), beforeBelowUsdd);
+
+    const pool = state.coins[coinId].pool;
+    const holding = (await snapshot(player)).holding;
+    const atMinimum = amountForGrossOutput(pool, holding, MIN_TRADE_USDD);
+    assert.ok(quoteSellExecution(pool, atMinimum).usddAmount >= MIN_TRADE_USDD);
+    const beforeAtMinimum = await snapshot(player);
+    const quoteAtMinimum = await http('POST', player, '/trade/quote', { coinId, side: 'sell', amountCoin: atMinimum });
+    assert.equal(quoteAtMinimum.status, 200);
+    assert.deepEqual(await snapshot(player), beforeAtMinimum);
+    const tradeAtMinimum = await executeTrade(state, player, { coinId, side: 'sell', amountCoin: atMinimum });
+    assert.ok(tradeAtMinimum.usddAmount + tradeAtMinimum.fee >= MIN_TRADE_USDD);
+    const afterAtMinimum = await snapshot(player);
+    assert.equal(afterAtMinimum.tradesCount, beforeAtMinimum.tradesCount + 1);
+    assert.equal(afterAtMinimum.tradeLogCount, beforeAtMinimum.tradeLogCount + 1);
+
+    const currentPool = state.coins[coinId].pool;
+    const remainingHolding = (await snapshot(player)).holding;
+    const aboveMinimumCoin = amountForGrossOutput(currentPool, remainingHolding, MIN_TRADE_USDD + 0.01);
+    const aboveMinimumUsdd = aboveMinimumCoin * price(currentPool);
+    const beforeUsddSell = await snapshot(player);
+    const quoteAboveUsdd = await http('POST', player, '/trade/quote', { coinId, side: 'sell', amountUsdd: aboveMinimumUsdd });
+    assert.equal(quoteAboveUsdd.status, 200);
+    const tradeAboveUsdd = await http('POST', player, '/trade', { coinId, side: 'sell', amountUsdd: aboveMinimumUsdd });
+    assert.equal(tradeAboveUsdd.status, 200);
+    assert.ok((await snapshot(player)).tradesCount === beforeUsddSell.tradesCount + 1);
+  });
+
   await run('valid numeric BUY, SELL and quotes still work', async () => {
     resetState();
     const player = playerId();
@@ -256,7 +379,7 @@ async function main(): Promise<void> {
     const amountCoin = (buy.body.coinAmount as number) / 2;
     const quoteSellResult = await http('POST', player, '/trade/quote', { coinId, side: 'sell', amountCoin });
     assert.equal(quoteSellResult.status, 200);
-    const quoteSellUsddResult = await http('POST', player, '/trade/quote', { coinId, side: 'sell', amountUsdd: 1 });
+    const quoteSellUsddResult = await http('POST', player, '/trade/quote', { coinId, side: 'sell', amountUsdd: 2 });
     assert.equal(quoteSellUsddResult.status, 200);
     const beforeSell = await snapshot(player);
     const sell = await http('POST', player, '/trade', { coinId, side: 'sell', amountCoin });
@@ -269,33 +392,6 @@ async function main(): Promise<void> {
     const sellUsdd = await http('POST', player, '/trade', { coinId, side: 'sell', amountUsdd: sellInUsdd });
     assert.equal(sellUsdd.status, 200);
     assert.ok(Number.isFinite(sellUsdd.body.usddAmount as number));
-  });
-
-  await run('microscopic positive SELL can still succeed with zero USDD output', async () => {
-    resetState();
-    const player = playerId();
-    const seeded = await http('POST', player, '/trade', { coinId, side: 'buy', amountUsdd: 10 });
-    assert.equal(seeded.status, 200);
-    const before = await snapshot(player);
-    const tinySell = await http('POST', player, '/trade', { coinId, side: 'sell', amountCoin: 1e-100 });
-    const after = await snapshot(player);
-    assert.equal(tinySell.status, 200);
-    assert.equal(tinySell.body.usddAmount, 0);
-    assert.equal(tinySell.body.fee, 0);
-    assert.equal(after.tradesCount, before.tradesCount + 1);
-    assert.equal(after.balance, before.balance);
-    assert.equal(after.holding, before.holding);
-    assert.equal(after.totalVolume, before.totalVolume);
-    assert.equal(after.totalFeesPaid, before.totalFeesPaid);
-    assert.ok(Number.isFinite(after.realizedPnl));
-    assert.ok(after.realizedPnl < before.realizedPnl);
-    assert.ok(Math.abs(after.realizedPnl - before.realizedPnl) < 1e-90);
-    const tradeLog = await db.query<{ usdd_amount: number; fee: number }>(
-      'SELECT usdd_amount, fee FROM trade_log WHERE player_id = $1 ORDER BY id DESC LIMIT 1',
-      [player],
-    );
-    assert.equal(tradeLog.rows[0].usdd_amount, 0);
-    assert.equal(tradeLog.rows[0].fee, 0);
   });
 
   const failed = results.filter(result => result.error);

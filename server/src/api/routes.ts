@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { EngineState, recentChangePct } from '../engine/state.js';
-import { quoteBuy, quoteSell, isFinitePositiveAmount, price } from '../engine/amm.js';
+import { quoteBuy, quoteSell, quoteSellExecution, isFinitePositiveAmount, price } from '../engine/amm.js';
 import { executeTrade, TradeError } from '../engine/trade.js';
 import { forcePhase, fearGreedLabel, phaseProgress, tick } from '../engine/tick.js';
 import { justifiedPrice } from '../engine/gravity.js';
@@ -8,7 +8,7 @@ import { aggregateCandles, isChartTimeframe } from '../engine/candleAggregate.js
 import { triggerNewsEvent } from '../engine/news.js';
 import { NewsDirection, NewsStrength } from '../config/news.js';
 import { MACRO_CONFIG, MACRO_ORDER, MacroPhase } from '../engine/macroCycle.js';
-import { COINS, COIN_MAP, tradeFeePct, sectionOf } from '../config/coins.js';
+import { COINS, COIN_MAP, tradeFeePct, sectionOf, MIN_TRADE_USDD } from '../config/coins.js';
 import { RANKS, RANK_UP_REWARDS } from '../config/ranks.js';
 import { DAILY_BONUS_AMOUNT, EMISSION_THRESHOLDS, DAILY_VOLUME_THRESHOLD, DAILY_VOLUME_REWARD } from '../config/quests.js';
 import { todaysVolume } from '../engine/dailyVolume.js';
@@ -81,6 +81,9 @@ export function createRouter(state: EngineState) {
     if (amountCoin !== undefined && !isFinitePositiveAmount(amountCoin)) return res.status(400).json({ error: 'invalid amount' });
     if (side === 'buy') {
       if (amountUsdd === undefined) return res.status(400).json({ error: 'invalid amount' });
+      if (amountUsdd < MIN_TRADE_USDD) {
+        return res.status(400).json({ error: `minimum trade size is ${MIN_TRADE_USDD} USDD` });
+      }
       try {
         const feeAmount = amountUsdd * tradeFeePct(coinId);
         const q = quoteBuy(cs.pool, amountUsdd - feeAmount);
@@ -103,6 +106,10 @@ export function createRouter(state: EngineState) {
     }
 
     try {
+      const grossUsddOut = quoteSellExecution(cs.pool, coinIn).usddAmount;
+      if (grossUsddOut < MIN_TRADE_USDD) {
+        return res.status(400).json({ error: `minimum trade size is ${MIN_TRADE_USDD} USDD` });
+      }
       const q = quoteSell(cs.pool, coinIn);
       const feeAmount = q.usddOut * tradeFeePct(coinId);
       return res.json({ expectedUsddOut: q.usddOut - feeAmount, avgPrice: q.avgPrice, priceImpactPct: q.priceImpactPct, feeAmount, feePct: tradeFeePct(coinId) });

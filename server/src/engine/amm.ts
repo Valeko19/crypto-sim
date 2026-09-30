@@ -91,11 +91,14 @@ export function buyWithUsdd(pool: Pool, usddIn: number): TradeResult {
   };
 }
 
-// Unlike buyWithUsdd, this one caps its OWN input (cappedCoinIn) before ever
-// deriving usddOut from it, and that same capped value is what both reserves
-// get updated with below — so k stays exactly preserved on its own; there is
-// no equivalent bug here to fix, just confirming it via the same audit.
-export function sellCoin(pool: Pool, coinIn: number): TradeResult {
+// Calculate the capped sell result without mutating the pool. Both execution
+// and the minimum-trade guard use this calculation so the guard sees the same
+// gross output that will actually enter the pool.
+function calculateSell(pool: Pool, coinIn: number): {
+  result: TradeResult;
+  nextCoinReserve: number;
+  nextUsddReserve: number;
+} {
   if (!isFinitePositiveAmount(coinIn)) throw new RangeError('coin input must be a finite positive number');
   const { priceBefore, invariant: kk } = assertValidPool(pool);
   const cappedCoinIn = Math.min(coinIn, pool.coinReserve * MAX_RESERVE_FRACTION);
@@ -114,16 +117,31 @@ export function sellCoin(pool: Pool, coinIn: number): TradeResult {
   if (!Number.isFinite(avgPrice)) throw new RangeError('average price must be finite');
   const slippagePct = (avgPrice / priceBefore - 1) * 100;
   if (!Number.isFinite(slippagePct)) throw new RangeError('slippage must be finite');
+  return {
+    result: {
+      coinAmount: cappedCoinIn,
+      usddAmount: usddOut,
+      avgPrice,
+      priceBefore,
+      priceAfter,
+      slippagePct,
+    },
+    nextCoinReserve,
+    nextUsddReserve,
+  };
+}
+
+export function quoteSellExecution(pool: Pool, coinIn: number): TradeResult {
+  return calculateSell(pool, coinIn).result;
+}
+
+// Unlike buyWithUsdd, this one caps its OWN input before deriving usddOut;
+// that exact capped value updates both reserves, preserving x*y=k.
+export function sellCoin(pool: Pool, coinIn: number): TradeResult {
+  const { result, nextCoinReserve, nextUsddReserve } = calculateSell(pool, coinIn);
   pool.coinReserve = nextCoinReserve;
   pool.usddReserve = nextUsddReserve;
-  return {
-    coinAmount: cappedCoinIn,
-    usddAmount: usddOut,
-    avgPrice,
-    priceBefore,
-    priceAfter,
-    slippagePct,
-  };
+  return result;
 }
 
 // Reprice the pool to hit a target price directly, preserving k when
