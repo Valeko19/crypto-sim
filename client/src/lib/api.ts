@@ -79,6 +79,22 @@ export interface LeaderboardEntry { place: number; username: string; netWorth: n
 export interface LeaderboardView { league: string; entries: LeaderboardEntry[]; minCapital: number; totalPlayers: number; }
 export interface RankInfo { name: string; min: number; max: number | null; }
 
+export interface TradeQuote {
+  requestedAmount: number;
+  requestedUnit: 'usdd' | 'coin';
+  executedAmount: number;
+  executedUnit: 'usdd' | 'coin';
+  expectedOutput: number;
+  outputUnit: 'usdd' | 'coin';
+  expectedCoinOut?: number;
+  expectedUsddOut?: number;
+  avgPrice: number;
+  priceImpactPct: number;
+  feeAmount: number;
+  feePct: number;
+  liquidityCapApplied: boolean;
+}
+
 export type StakingMode = 'flexible' | 'locked';
 
 export interface StakingPositionView {
@@ -134,7 +150,7 @@ export const api = {
   getLeaderboard: (league: string) => req<LeaderboardView>(`/leaderboard?league=${encodeURIComponent(league)}`),
   getRanks: () => req<{ ranks: RankInfo[] }>('/ranks'),
   quoteTrade: (body: { coinId: string; side: 'buy' | 'sell'; amountUsdd?: number; amountCoin?: number }) =>
-    req<{ expectedCoinOut?: number; expectedUsddOut?: number; avgPrice: number; priceImpactPct: number; feeAmount: number; feePct: number }>(
+    req<TradeQuote>(
       '/trade/quote', { method: 'POST', body: JSON.stringify(body) }
     ),
   trade: (body: { coinId: string; side: 'buy' | 'sell'; amountUsdd?: number; amountCoin?: number; useMax?: boolean }) =>

@@ -99,6 +99,10 @@ function assertFiniteSnapshot(value: Awaited<ReturnType<typeof snapshot>>): void
   for (const number of Object.values(value)) assert.ok(Number.isFinite(number), `non-finite state: ${JSON.stringify(value)}`);
 }
 
+function assertClose(actual: number, expected: number, tolerance = 1e-10): void {
+  assert.ok(Math.abs(actual - expected) <= Math.max(tolerance, Math.abs(expected) * tolerance), `${actual} != ${expected}`);
+}
+
 function withAmount(side: 'buy' | 'sell', field: 'amountUsdd' | 'amountCoin', value: unknown) {
   const body: Record<string, unknown> = { coinId, side };
   if (value !== omitted) body[field] = value;
@@ -396,6 +400,77 @@ async function main(): Promise<void> {
     const sellUsdd = await http('POST', player, '/trade', { coinId, side: 'sell', amountUsdd: sellInUsdd });
     assert.equal(sellUsdd.status, 200);
     assert.ok(Number.isFinite(sellUsdd.body.usddAmount as number));
+  });
+
+  await run('BUY quote matches execution below and above liquidity cap', async () => {
+    for (const capped of [false, true]) {
+      resetState();
+      const player = playerId();
+      await snapshotAfterEnsure(player);
+      const requested = capped ? state.coins[coinId].pool.usddReserve : 100;
+      await db.query('UPDATE players SET usdd_balance = $1 WHERE id = $2', [requested * 1.1, player]);
+
+      const quote = await http('POST', player, '/trade/quote', { coinId, side: 'buy', amountUsdd: requested });
+      assert.equal(quote.status, 200);
+      assert.equal(quote.body.liquidityCapApplied, capped);
+      assert.equal(quote.body.requestedAmount, requested);
+      assert.equal(quote.body.requestedUnit, 'usdd');
+      assert.equal(quote.body.executedUnit, 'usdd');
+      if (capped) assert.ok((quote.body.executedAmount as number) < requested);
+      else assertClose(quote.body.executedAmount as number, requested);
+
+      const before = await snapshot(player);
+      const trade = await http('POST', player, '/trade', { coinId, side: 'buy', amountUsdd: requested });
+      assert.equal(trade.status, 200);
+      assertClose(quote.body.expectedCoinOut as number, trade.body.coinAmount as number);
+      assertClose(quote.body.executedAmount as number, (trade.body.usddAmount as number) + (trade.body.fee as number));
+      const after = await snapshot(player);
+      assertClose(before.balance - after.balance, quote.body.executedAmount as number);
+      if (capped) assert.ok(after.balance > before.balance - requested);
+      else assertClose(after.balance, before.balance - requested);
+    }
+  });
+
+  await run('SELL quote matches execution below and above liquidity cap', async () => {
+    resetState();
+    const ordinaryPlayer = playerId();
+    const seeded = await http('POST', ordinaryPlayer, '/trade', { coinId, side: 'buy', amountUsdd: 100 });
+    assert.equal(seeded.status, 200);
+    const ordinaryAmount = (await snapshot(ordinaryPlayer)).holding / 2;
+    const ordinaryQuote = await http('POST', ordinaryPlayer, '/trade/quote', { coinId, side: 'sell', amountCoin: ordinaryAmount });
+    assert.equal(ordinaryQuote.status, 200);
+    assert.equal(ordinaryQuote.body.liquidityCapApplied, false);
+    assert.equal(ordinaryQuote.body.requestedAmount, ordinaryAmount);
+    assert.equal(ordinaryQuote.body.requestedUnit, 'coin');
+    assert.equal(ordinaryQuote.body.executedUnit, 'coin');
+    const ordinaryTrade = await http('POST', ordinaryPlayer, '/trade', { coinId, side: 'sell', amountCoin: ordinaryAmount });
+    assert.equal(ordinaryTrade.status, 200);
+    assertClose(ordinaryQuote.body.executedAmount as number, ordinaryTrade.body.coinAmount as number);
+    assertClose(ordinaryQuote.body.expectedUsddOut as number, ordinaryTrade.body.usddAmount as number);
+
+    const cappedPlayer = playerId();
+    await http('GET', cappedPlayer, '/portfolio');
+    const requested = state.coins[coinId].pool.coinReserve * 0.8;
+    await db.query(
+      'INSERT INTO player_holdings (player_id, coin_id, amount, avg_buy_price) VALUES ($1, $2, $3, $4)',
+      [cappedPlayer, coinId, requested, 10]
+    );
+    const before = await snapshot(cappedPlayer);
+    const quote = await http('POST', cappedPlayer, '/trade/quote', { coinId, side: 'sell', amountCoin: requested });
+    assert.equal(quote.status, 200);
+    assert.equal(quote.body.liquidityCapApplied, true);
+    assert.equal(quote.body.requestedAmount, requested);
+    assert.equal(quote.body.requestedUnit, 'coin');
+    assert.equal(quote.body.executedUnit, 'coin');
+    assert.ok((quote.body.executedAmount as number) < requested);
+
+    const trade = await http('POST', cappedPlayer, '/trade', { coinId, side: 'sell', amountCoin: requested });
+    assert.equal(trade.status, 200);
+    assertClose(quote.body.executedAmount as number, trade.body.coinAmount as number);
+    assertClose(quote.body.expectedUsddOut as number, trade.body.usddAmount as number);
+    const after = await snapshot(cappedPlayer);
+    assertClose(before.holding - after.holding, quote.body.executedAmount as number);
+    assert.ok(after.holding > 0);
   });
 
   const failed = results.filter(result => result.error);

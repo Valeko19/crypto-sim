@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { EngineState, recentChangePct } from '../engine/state.js';
-import { quoteBuy, quoteSell, quoteSellExecution, isFinitePositiveAmount, price } from '../engine/amm.js';
+import { quoteBuyExecution, quoteSellExecution, isFinitePositiveAmount, price } from '../engine/amm.js';
 import { executeTrade, TradeError } from '../engine/trade.js';
 import { forcePhase, fearGreedLabel, phaseProgress, tick } from '../engine/tick.js';
 import { justifiedPrice } from '../engine/gravity.js';
@@ -86,9 +86,26 @@ export function createRouter(state: EngineState) {
         return res.status(400).json({ error: `minimum trade size is ${MIN_TRADE_USDD} USDD` });
       }
       try {
-        const feeAmount = amountUsdd * tradeFeePct(coinId);
-        const q = quoteBuy(cs.pool, amountUsdd - feeAmount);
-        return res.json({ expectedCoinOut: q.coinOut, avgPrice: q.avgPrice, priceImpactPct: q.priceImpactPct, feeAmount, feePct: tradeFeePct(coinId) });
+        const feePct = tradeFeePct(coinId);
+        const requestedFee = amountUsdd * feePct;
+        const q = quoteBuyExecution(cs.pool, amountUsdd - requestedFee);
+        const executedFraction = q.requestedInput > 0 ? q.executedInput / q.requestedInput : 1;
+        const feeAmount = requestedFee * executedFraction;
+        const executedUsdd = q.executedInput + feeAmount;
+        return res.json({
+          requestedAmount: amountUsdd,
+          requestedUnit: 'usdd',
+          executedAmount: executedUsdd,
+          executedUnit: 'usdd',
+          expectedOutput: q.coinAmount,
+          outputUnit: 'coin',
+          expectedCoinOut: q.coinAmount,
+          avgPrice: q.avgPrice,
+          priceImpactPct: q.slippagePct,
+          feeAmount,
+          feePct,
+          liquidityCapApplied: q.liquidityCapApplied,
+        });
       } catch {
         return res.status(400).json({ error: 'quote failed' });
       }
@@ -107,13 +124,28 @@ export function createRouter(state: EngineState) {
     }
 
     try {
-      const grossUsddOut = quoteSellExecution(cs.pool, coinIn).usddAmount;
-      if (grossUsddOut < MIN_TRADE_USDD) {
+      const q = quoteSellExecution(cs.pool, coinIn);
+      if (q.usddAmount < MIN_TRADE_USDD) {
         return res.status(400).json({ error: `minimum trade size is ${MIN_TRADE_USDD} USDD` });
       }
-      const q = quoteSell(cs.pool, coinIn);
-      const feeAmount = q.usddOut * tradeFeePct(coinId);
-      return res.json({ expectedUsddOut: q.usddOut - feeAmount, avgPrice: q.avgPrice, priceImpactPct: q.priceImpactPct, feeAmount, feePct: tradeFeePct(coinId) });
+      const feePct = tradeFeePct(coinId);
+      const feeAmount = q.usddAmount * feePct;
+      const expectedUsddOut = q.usddAmount - feeAmount;
+      const requestedAmount = amountCoin !== undefined ? amountCoin : amountUsdd!;
+      return res.json({
+        requestedAmount,
+        requestedUnit: amountCoin !== undefined ? 'coin' : 'usdd',
+        executedAmount: q.coinAmount,
+        executedUnit: 'coin',
+        expectedOutput: expectedUsddOut,
+        outputUnit: 'usdd',
+        expectedUsddOut,
+        avgPrice: q.avgPrice,
+        priceImpactPct: q.slippagePct,
+        feeAmount,
+        feePct,
+        liquidityCapApplied: q.liquidityCapApplied,
+      });
     } catch {
       return res.status(400).json({ error: 'quote failed' });
     }

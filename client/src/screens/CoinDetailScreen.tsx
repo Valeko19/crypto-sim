@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { createChart, ColorType, CandlestickSeriesPartialOptions, IChartApi, ISeriesApi } from 'lightweight-charts';
-import { api, Candle, CoinListItem, TradingBotStatus } from '../lib/api';
+import { api, Candle, CoinListItem, TradeQuote, TradingBotStatus } from '../lib/api';
 import { useMarketSocket } from '../hooks/useMarketSocket';
 import { CoinAvatar } from '../components/CoinAvatar';
 import { NewsBanner } from '../components/NewsBanner';
@@ -70,7 +70,7 @@ export function CoinDetailScreen() {
   // whether price moves between now and execution, instead of trusting a
   // client-computed amount that could drift from the real holding.
   const [isMaxAmount, setIsMaxAmount] = useState(false);
-  const [quote, setQuote] = useState<{ avgPrice: number; priceImpactPct: number; feeAmount: number; feePct: number; out: number } | null>(null);
+  const [quote, setQuote] = useState<TradeQuote | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -352,8 +352,7 @@ export function CoinDetailScreen() {
     try {
       const body = mode === 'usdd' ? { coinId, side, amountUsdd: num } : { coinId, side, amountCoin: num };
       const res = await api.quoteTrade(body);
-      const out = side === 'buy' ? res.expectedCoinOut! : res.expectedUsddOut!;
-      setQuote({ avgPrice: res.avgPrice, priceImpactPct: res.priceImpactPct, feeAmount: res.feeAmount, feePct: res.feePct, out });
+      setQuote(res);
     } catch {
       setQuote(null);
     }
@@ -533,12 +532,35 @@ export function CoinDetailScreen() {
 
         {quote && (
           <div className="mt-3 rounded-xl bg-card-light p-3 text-xs text-muted">
+            {quote.liquidityCapApplied && (
+              <div className="mb-2 border-b border-border pb-2">
+                <div className="font-semibold text-yellow-300">Лимит ликвидности достигнут</div>
+                <div className="mb-1 text-[10px] text-muted">Будет исполнена только доступная часть заявки</div>
+                <div>
+                  Запрошено: {quote.requestedUnit === 'usdd'
+                    ? formatUsdd(quote.requestedAmount)
+                    : `${formatAmountInput(String(quote.requestedAmount))} ${coin?.symbol ?? ''}`}
+                </div>
+                <div>
+                  {side === 'buy' ? 'Будет использовано' : 'Будет продано'}: {quote.executedUnit === 'usdd'
+                    ? formatUsdd(quote.executedAmount)
+                    : `${formatAmountInput(String(quote.executedAmount))} ${coin?.symbol ?? ''}`}
+                </div>
+                <div>
+                  Получите: {quote.outputUnit === 'usdd'
+                    ? formatUsdd(quote.expectedOutput)
+                    : `${quote.expectedOutput.toFixed(6)} ${coin?.symbol ?? ''}`}
+                </div>
+              </div>
+            )}
             <div>Ожидаемая цена: ~${formatPrice(quote.avgPrice)}</div>
             <div className={Math.abs(quote.priceImpactPct) > 3 ? 'text-negative' : ''}>
               Проскальзывание: {formatPct(quote.priceImpactPct)}
             </div>
             <div>Комиссия ({(quote.feePct * 100).toFixed(2).replace(/\.?0+$/, '')}%): {formatUsdd(quote.feeAmount)}</div>
-            <div>Вы получите: {side === 'buy' ? `${quote.out.toFixed(6)} ${coin?.symbol ?? ''}` : formatUsdd(quote.out)}</div>
+            {!quote.liquidityCapApplied && (
+              <div>Вы получите: {side === 'buy' ? `${quote.expectedOutput.toFixed(6)} ${coin?.symbol ?? ''}` : formatUsdd(quote.expectedOutput)}</div>
+            )}
           </div>
         )}
 
