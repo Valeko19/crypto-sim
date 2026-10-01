@@ -533,8 +533,13 @@ export function CoinDetailScreen() {
         {quote && (
           <div className="mt-3 rounded-xl bg-card-light p-3 text-xs text-muted">
             {quote.liquidityCapApplied && (
-              <div className="mb-2 border-b border-border pb-2 font-semibold text-yellow-300">
-                Лимит ликвидности по активу достигнут
+              <div className="mb-2 border-b border-border pb-2">
+                <div className="font-semibold text-yellow-300">Лимит ликвидности по активу достигнут</div>
+                <div className="text-muted">
+                  {side === 'buy'
+                    ? `Максимальная сумма покупки: ${formatUsdd(quote.executedAmount)}`
+                    : `Максимальная сумма продажи: ${formatQtyCompact(quote.executedAmount, livePrice)} ${coin?.symbol ?? 'COIN'}`}
+                </div>
               </div>
             )}
             <div>Ожидаемая цена: ~${formatPrice(quote.avgPrice)}</div>
