@@ -533,24 +533,8 @@ export function CoinDetailScreen() {
         {quote && (
           <div className="mt-3 rounded-xl bg-card-light p-3 text-xs text-muted">
             {quote.liquidityCapApplied && (
-              <div className="mb-2 border-b border-border pb-2">
-                <div className="font-semibold text-yellow-300">Лимит ликвидности достигнут</div>
-                <div className="mb-1 text-[10px] text-muted">Будет исполнена только доступная часть заявки</div>
-                <div>
-                  Запрошено: {quote.requestedUnit === 'usdd'
-                    ? formatUsdd(quote.requestedAmount)
-                    : `${formatAmountInput(String(quote.requestedAmount))} ${coin?.symbol ?? ''}`}
-                </div>
-                <div>
-                  {side === 'buy' ? 'Будет использовано' : 'Будет продано'}: {quote.executedUnit === 'usdd'
-                    ? formatUsdd(quote.executedAmount)
-                    : `${formatAmountInput(String(quote.executedAmount))} ${coin?.symbol ?? ''}`}
-                </div>
-                <div>
-                  Получите: {quote.outputUnit === 'usdd'
-                    ? formatUsdd(quote.expectedOutput)
-                    : `${quote.expectedOutput.toFixed(6)} ${coin?.symbol ?? ''}`}
-                </div>
+              <div className="mb-2 border-b border-border pb-2 font-semibold text-yellow-300">
+                Лимит ликвидности по активу достигнут
               </div>
             )}
             <div>Ожидаемая цена: ~${formatPrice(quote.avgPrice)}</div>
