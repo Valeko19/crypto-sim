@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import type { PGliteInterface } from '@electric-sql/pglite';
 import { db } from './index.js';
 import { StakingMode, STAKING_FLEXIBLE_APR, STAKING_LOCKED_APR } from '../config/staking.js';
+
+type QueryClient = Pick<PGliteInterface, 'query'>;
 
 export interface PlayerRow {
   id: string;
@@ -51,8 +54,8 @@ export async function getAllPlayers(): Promise<PlayerRow[]> {
   return (await db.query<PlayerRow>('SELECT * FROM players')).rows;
 }
 
-export async function getPlayer(id: string): Promise<PlayerRow> {
-  const res = await db.query<PlayerRow>('SELECT * FROM players WHERE id = $1', [id]);
+export async function getPlayer(id: string, client: QueryClient = db): Promise<PlayerRow> {
+  const res = await client.query<PlayerRow>('SELECT * FROM players WHERE id = $1', [id]);
   return res.rows[0];
 }
 
@@ -65,8 +68,8 @@ export async function getAllHoldings(): Promise<HoldingRow[]> {
   return (await db.query<HoldingRow>('SELECT * FROM player_holdings')).rows;
 }
 
-export async function getHolding(playerId: string, coinId: string): Promise<HoldingRow | null> {
-  const res = await db.query<HoldingRow>(
+export async function getHolding(playerId: string, coinId: string, client: QueryClient = db): Promise<HoldingRow | null> {
+  const res = await client.query<HoldingRow>(
     'SELECT * FROM player_holdings WHERE player_id = $1 AND coin_id = $2',
     [playerId, coinId]
   );
@@ -75,11 +78,10 @@ export async function getHolding(playerId: string, coinId: string): Promise<Hold
 
 // Developer-only debugging log (see db/index.ts's trade_log table comment) —
 // never read by anything player-facing, only GET /api/admin/trade-log.
-// Fire-and-forget from the caller's perspective is NOT appropriate here since
-// applyBuy/applySell already await every other write in the same spirit; this
-// is just one more INSERT alongside them, same transaction-less convention
-// (no SQL transactions anywhere in this project — see other functions here).
+// This write receives the same transaction client as the settlement, so a log
+// failure rolls back both the player changes and the corresponding pool state.
 async function insertTradeLog(
+  client: QueryClient,
   playerId: string,
   coinId: string,
   side: 'buy' | 'sell',
@@ -88,7 +90,7 @@ async function insertTradeLog(
   execPrice: number,
   feeAmount: number
 ): Promise<void> {
-  await db.query(
+  await client.query(
     `INSERT INTO trade_log (player_id, coin_id, side, coin_amount, usdd_amount, price, fee)
      VALUES ($1, $2, $3, $4, $5, $6, $7)`,
     [playerId, coinId, side, coinAmount, usddAmount, execPrice, feeAmount]
@@ -96,6 +98,7 @@ async function insertTradeLog(
 }
 
 export async function applyBuy(
+  client: QueryClient,
   playerId: string,
   coinId: string,
   coinAmount: number,
@@ -103,29 +106,32 @@ export async function applyBuy(
   execPrice: number,
   feeAmount: number
 ): Promise<void> {
-  const existing = await getHolding(playerId, coinId);
+  const existing = await getHolding(playerId, coinId, client);
   if (existing) {
     const newAmount = existing.amount + coinAmount;
     const newAvgPrice = (existing.amount * existing.avg_buy_price + coinAmount * execPrice) / newAmount;
-    await db.query(
+    await client.query(
       'UPDATE player_holdings SET amount = $1, avg_buy_price = $2 WHERE player_id = $3 AND coin_id = $4',
       [newAmount, newAvgPrice, playerId, coinId]
     );
   } else {
-    await db.query(
+    await client.query(
       'INSERT INTO player_holdings (player_id, coin_id, amount, avg_buy_price) VALUES ($1, $2, $3, $4)',
       [playerId, coinId, coinAmount, execPrice]
     );
   }
-  await db.query(
+  const playerUpdate = await client.query<{ id: string }>(
     `UPDATE players SET usdd_balance = usdd_balance - $1, trades_count = trades_count + 1,
-     total_volume = total_volume + $1, total_fees_paid = total_fees_paid + $3 WHERE id = $2`,
+     total_volume = total_volume + $1, total_fees_paid = total_fees_paid + $3
+     WHERE id = $2 AND usdd_balance >= $1 RETURNING id`,
     [usddSpent, playerId, feeAmount]
   );
-  await insertTradeLog(playerId, coinId, 'buy', coinAmount, usddSpent, execPrice, feeAmount);
+  if (!playerUpdate.rows.length) throw new Error('insufficient balance');
+  await insertTradeLog(client, playerId, coinId, 'buy', coinAmount, usddSpent, execPrice, feeAmount);
 }
 
 export async function applySell(
+  client: QueryClient,
   playerId: string,
   coinId: string,
   coinAmount: number,
@@ -133,25 +139,80 @@ export async function applySell(
   execPrice: number,
   feeAmount: number
 ): Promise<void> {
-  const existing = await getHolding(playerId, coinId);
+  const existing = await getHolding(playerId, coinId, client);
   if (!existing) throw new Error('No holding to sell');
   const realizedPnl = (execPrice - existing.avg_buy_price) * coinAmount;
   const remaining = existing.amount - coinAmount;
   if (remaining <= 1e-9) {
-    await db.query('DELETE FROM player_holdings WHERE player_id = $1 AND coin_id = $2', [playerId, coinId]);
-  } else {
-    await db.query(
-      'UPDATE player_holdings SET amount = $1 WHERE player_id = $2 AND coin_id = $3',
-      [remaining, playerId, coinId]
+    const deleted = await client.query<{ player_id: string }>(
+      'DELETE FROM player_holdings WHERE player_id = $1 AND coin_id = $2 AND amount >= $3 RETURNING player_id',
+      [playerId, coinId, coinAmount]
     );
+    if (!deleted.rows.length) throw new Error('No holding to sell');
+  } else {
+    const updated = await client.query<{ player_id: string }>(
+      'UPDATE player_holdings SET amount = $1 WHERE player_id = $2 AND coin_id = $3 AND amount >= $4 RETURNING player_id',
+      [remaining, playerId, coinId, coinAmount]
+    );
+    if (!updated.rows.length) throw new Error('No holding to sell');
   }
-  await db.query(
+  await client.query(
     `UPDATE players SET usdd_balance = usdd_balance + $1, trades_count = trades_count + 1,
      total_volume = total_volume + $1, realized_pnl = realized_pnl + $2, total_fees_paid = total_fees_paid + $4
      WHERE id = $3`,
     [usddReceived, realizedPnl, playerId, feeAmount]
   );
-  await insertTradeLog(playerId, coinId, 'sell', coinAmount, usddReceived, execPrice, feeAmount);
+  await insertTradeLog(client, playerId, coinId, 'sell', coinAmount, usddReceived, execPrice, feeAmount);
+}
+
+export interface TradeRequestRow {
+  request_hash: string;
+  response: unknown | null;
+}
+
+export async function reserveTradeRequest(
+  client: QueryClient,
+  playerId: string,
+  requestId: string,
+  requestHash: string
+): Promise<boolean> {
+  const res = await client.query<{ request_id: string }>(
+    `INSERT INTO trade_requests (player_id, request_id, request_hash)
+     VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING request_id`,
+    [playerId, requestId, requestHash]
+  );
+  return res.rows.length > 0;
+}
+
+export async function getTradeRequest(
+  client: QueryClient,
+  playerId: string,
+  requestId: string
+): Promise<TradeRequestRow | null> {
+  const res = await client.query<TradeRequestRow>(
+    'SELECT request_hash, response FROM trade_requests WHERE player_id = $1 AND request_id = $2',
+    [playerId, requestId]
+  );
+  return res.rows[0] ?? null;
+}
+
+export async function saveTradeRequestResponse(
+  client: QueryClient,
+  playerId: string,
+  requestId: string,
+  response: unknown
+): Promise<void> {
+  await client.query(
+    'UPDATE trade_requests SET response = $3 WHERE player_id = $1 AND request_id = $2',
+    [playerId, requestId, JSON.stringify(response)]
+  );
+}
+
+export async function prunePriorBotTradeRequests(playerId: string, currentRequestId: string): Promise<void> {
+  await db.query(
+    "DELETE FROM trade_requests WHERE player_id = $1 AND request_id LIKE 'bot:%' AND request_id < $2",
+    [playerId, currentRequestId]
+  );
 }
 
 export interface QuestProgressRow {
@@ -233,8 +294,13 @@ export async function getAllPoolSnapshots(): Promise<PoolSnapshotRow[]> {
   return res.rows;
 }
 
-export async function savePoolSnapshot(coinId: string, coinReserve: number, usddReserve: number): Promise<void> {
-  await db.query(
+export async function savePoolSnapshotWithClient(
+  client: QueryClient,
+  coinId: string,
+  coinReserve: number,
+  usddReserve: number
+): Promise<void> {
+  await client.query(
     `INSERT INTO coin_pools (coin_id, coin_reserve, usdd_reserve) VALUES ($1, $2, $3)
      ON CONFLICT (coin_id) DO UPDATE SET coin_reserve = $2, usdd_reserve = $3`,
     [coinId, coinReserve, usddReserve]
@@ -452,16 +518,38 @@ export async function setTradingBotEnabled(playerId: string, enabled: boolean): 
   }
 }
 
-// Called after each successful bot-fired trade (see engine/tradingBot.ts) —
-// usddDelta/coinDelta should be the trade's ACTUAL executed size (same
-// convention as recordTradeVolume: total charged for a buy, net received for
-// a sell), not the requested amount, so a MAX_RESERVE_FRACTION-capped trade
-// doesn't over-count.
-export async function addBotRunTotals(playerId: string, usddDelta: number, coinDelta: number): Promise<void> {
-  await db.query(
-    'UPDATE trading_bots SET run_total_usdd = run_total_usdd + $2, run_total_coins = run_total_coins + $3 WHERE player_id = $1',
-    [playerId, usddDelta, coinDelta]
+export async function isCurrentDueBotFiring(
+  client: QueryClient,
+  playerId: string,
+  scheduledAt: string
+): Promise<boolean> {
+  const res = await client.query<{ player_id: string }>(
+    `SELECT player_id FROM trading_bots
+     WHERE player_id = $1 AND enabled = TRUE AND purchased = TRUE
+       AND next_run_at = $2 AND next_run_at <= now()
+     FOR UPDATE`,
+    [playerId, scheduledAt]
   );
+  return res.rows.length > 0;
+}
+
+export async function settleBotFiring(
+  client: QueryClient,
+  playerId: string,
+  scheduledAt: string,
+  usddDelta: number,
+  coinDelta: number,
+  nextRunAt: string
+): Promise<void> {
+  const res = await client.query<{ player_id: string }>(
+    `UPDATE trading_bots
+     SET run_total_usdd = run_total_usdd + $3, run_total_coins = run_total_coins + $4,
+         next_run_at = $5
+     WHERE player_id = $1 AND enabled = TRUE AND purchased = TRUE AND next_run_at = $2
+     RETURNING player_id`,
+    [playerId, scheduledAt, usddDelta, coinDelta, nextRunAt]
+  );
+  if (!res.rows.length) throw new Error('bot firing is no longer current');
 }
 
 // Every player with an active, purchased bot — polled by the background job.
@@ -470,11 +558,18 @@ export async function getAllEnabledTradingBots(): Promise<TradingBotRow[]> {
   return res.rows;
 }
 
-export async function advanceBotNextRun(playerId: string, intervalMs: number): Promise<void> {
-  await db.query('UPDATE trading_bots SET next_run_at = $2 WHERE player_id = $1', [
-    playerId,
-    new Date(Date.now() + intervalMs).toISOString(),
-  ]);
+export async function advanceBotNextRunIfDue(
+  playerId: string,
+  intervalMs: number,
+  scheduledAt: string
+): Promise<boolean> {
+  const res = await db.query<{ player_id: string }>(
+    `UPDATE trading_bots SET next_run_at = $2
+     WHERE player_id = $1 AND enabled = TRUE AND purchased = TRUE AND next_run_at = $3
+     RETURNING player_id`,
+    [playerId, new Date(Date.now() + intervalMs).toISOString(), scheduledAt]
+  );
+  return res.rows.length > 0;
 }
 
 // --- Rank-up rewards ---------------------------------------------------------
@@ -506,8 +601,8 @@ export async function setHighestLeagueIndex(playerId: string, index: number): Pr
 
 // How much of this (player, coin) holding is currently reserved by open
 // staking positions — used to cap how much can be sold/staked further.
-export async function reservedStakedAmount(playerId: string, coinId: string): Promise<number> {
-  const res = await db.query<StakingPositionRow>(
+export async function reservedStakedAmount(playerId: string, coinId: string, client: QueryClient = db): Promise<number> {
+  const res = await client.query<StakingPositionRow>(
     'SELECT * FROM staking_positions WHERE player_id = $1 AND coin_id = $2',
     [playerId, coinId]
   );

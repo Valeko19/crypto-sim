@@ -139,7 +139,7 @@ export const api = {
     ),
   trade: (body: { coinId: string; side: 'buy' | 'sell'; amountUsdd?: number; amountCoin?: number; useMax?: boolean }) =>
     req<{ coinAmount: number; usddAmount: number; avgPrice: number; slippagePct: number; fee: number }>(
-      '/trade', { method: 'POST', body: JSON.stringify(body) }
+      '/trade', { method: 'POST', body: JSON.stringify({ ...body, requestId: globalThis.crypto.randomUUID() }) }
     ),
   getStaking: () => req<{
     coins: StakingCoinView[];

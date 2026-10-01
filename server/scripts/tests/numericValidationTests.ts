@@ -26,6 +26,7 @@ const results: { name: string; error?: unknown }[] = [];
 let server: Server | null = null;
 let state = createInitialState();
 let requestNumber = 0;
+let tradeRequestNumber = 0;
 
 function resetState(): void {
   Object.assign(state, createInitialState());
@@ -48,10 +49,13 @@ async function run(name: string, fn: () => Promise<void> | void): Promise<void> 
 }
 
 async function http(method: 'GET' | 'POST', player: string, endpoint: string, body?: unknown) {
+  const requestBody = endpoint === '/trade' && body && typeof body === 'object' && !Array.isArray(body)
+    ? { ...body, requestId: `numeric-${++tradeRequestNumber}` }
+    : body;
   const response = await fetch(`http://127.0.0.1:${server!.address()!.port}/api${endpoint}`, {
     method,
     headers: { 'content-type': 'application/json', 'X-Dev-Player-Id': player },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: requestBody === undefined ? undefined : JSON.stringify(requestBody),
   });
   return { status: response.status, body: await response.json() as Record<string, unknown> };
 }

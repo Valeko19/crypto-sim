@@ -27,6 +27,7 @@ import {
 } from '../db/queries.js';
 import { computePortfolio, computeLeaderboard, findEmissionLeader, computeStaking } from './helpers.js';
 import { STAKING_FLEXIBLE_COOLDOWN_MS, STAKING_FLEXIBLE_APR } from '../config/staking.js';
+import { withMarketLock } from '../engine/marketLock.js';
 
 export function createRouter(state: EngineState) {
   const router = Router();
@@ -119,10 +120,14 @@ export function createRouter(state: EngineState) {
   });
 
   router.post('/trade', async (req, res) => {
-    const { coinId, side, amountUsdd, amountCoin, useMax } = req.body;
+    const { coinId, side, amountUsdd, amountCoin, useMax, requestId } = req.body;
+    if (typeof requestId !== 'string' || requestId.length < 1 || requestId.length > 128 || requestId.startsWith('bot:')) {
+      return res.status(400).json({ error: 'invalid request id' });
+    }
     try {
-      const result = await executeTrade(state, req.playerId, { coinId, side, amountUsdd, amountCoin, useMax });
-      res.json(result);
+      const result = await executeTrade(state, req.playerId, { coinId, side, amountUsdd, amountCoin, useMax, requestId });
+      const { replayed: _replayed, ...response } = result;
+      res.json(response);
     } catch (e) {
       const status = e instanceof TradeError ? e.status : 400;
       res.status(status).json({ error: e instanceof Error ? e.message : 'trade failed' });
@@ -540,35 +545,33 @@ export function createRouter(state: EngineState) {
   // Bypasses the normal per-tick WS broadcast entirely — connected dev
   // clients just see time jump when this returns. Same "safe dev
   // environment" gate as the routes above.
-  router.post('/debug/fast-forward', (req, res) => {
+  router.post('/debug/fast-forward', async (req, res) => {
     if (!DEV_AUTH_ALLOWED) return res.status(403).json({ error: 'not available' });
     const ticks = Math.min(Math.max(Math.floor(Number(req.body?.ticks) || 0), 0), 300_000);
-
-    const priceStats: Record<string, { min: number; max: number }> = {};
-    for (const cfg of COINS) {
-      const p = price(state.coins[cfg.id].pool);
-      priceStats[cfg.id] = { min: p, max: p };
-    }
-    // Records BTCR's price at the start of every macro phase encountered
-    // during the loop (including the phase already active when it started),
-    // so a caller can derive each individual phase's actual % move in one
-    // pass instead of polling between forced phase changes.
-    const phaseLog: { phase: MacroPhase; atTick: number; btcrPrice: number }[] = [
-      { phase: state.macroPhase, atTick: state.tickCount, btcrPrice: price(state.coins['btcr'].pool) },
-    ];
-    for (let i = 0; i < ticks; i++) {
-      tick(state);
+    const result = await withMarketLock(() => {
+      const priceStats: Record<string, { min: number; max: number }> = {};
       for (const cfg of COINS) {
         const p = price(state.coins[cfg.id].pool);
-        const s = priceStats[cfg.id];
-        if (p < s.min) s.min = p;
-        if (p > s.max) s.max = p;
+        priceStats[cfg.id] = { min: p, max: p };
       }
-      if (state.macroPhase !== phaseLog[phaseLog.length - 1].phase) {
-        phaseLog.push({ phase: state.macroPhase, atTick: state.tickCount, btcrPrice: price(state.coins['btcr'].pool) });
+      const phaseLog: { phase: MacroPhase; atTick: number; btcrPrice: number }[] = [
+        { phase: state.macroPhase, atTick: state.tickCount, btcrPrice: price(state.coins['btcr'].pool) },
+      ];
+      for (let i = 0; i < ticks; i++) {
+        tick(state);
+        for (const cfg of COINS) {
+          const p = price(state.coins[cfg.id].pool);
+          const s = priceStats[cfg.id];
+          if (p < s.min) s.min = p;
+          if (p > s.max) s.max = p;
+        }
+        if (state.macroPhase !== phaseLog[phaseLog.length - 1].phase) {
+          phaseLog.push({ phase: state.macroPhase, atTick: state.tickCount, btcrPrice: price(state.coins['btcr'].pool) });
+        }
       }
-    }
-    res.json({ ticksRun: ticks, tickCount: state.tickCount, macroPhase: state.macroPhase, priceStats, phaseLog });
+      return { ticksRun: ticks, tickCount: state.tickCount, macroPhase: state.macroPhase, priceStats, phaseLog };
+    });
+    res.json(result);
   });
 
   // Raw pool reserves — lets a test independently re-derive the
@@ -594,17 +597,19 @@ export function createRouter(state: EngineState) {
   // snapshotted to disk every 10s and resumed on restart — without this,
   // each test run would leave a one-way-ratcheting mark on the shared dev
   // market).
-  router.post('/debug/restore-pools', (req, res) => {
+  router.post('/debug/restore-pools', async (req, res) => {
     if (!DEV_AUTH_ALLOWED) return res.status(403).json({ error: 'not available' });
     const pools = req.body?.pools as Record<string, { coinReserve: number; usddReserve: number; playerOwnedCoins?: number }> | undefined;
     if (!pools) return res.status(400).json({ error: 'missing pools' });
-    for (const [coinId, reserves] of Object.entries(pools)) {
-      const cs = state.coins[coinId];
-      if (!cs || !reserves) continue;
-      cs.pool.coinReserve = reserves.coinReserve;
-      cs.pool.usddReserve = reserves.usddReserve;
-      if (reserves.playerOwnedCoins != null) cs.playerOwnedCoins = reserves.playerOwnedCoins;
-    }
+    await withMarketLock(() => {
+      for (const [coinId, reserves] of Object.entries(pools)) {
+        const cs = state.coins[coinId];
+        if (!cs || !reserves) continue;
+        cs.pool.coinReserve = reserves.coinReserve;
+        cs.pool.usddReserve = reserves.usddReserve;
+        if (reserves.playerOwnedCoins != null) cs.playerOwnedCoins = reserves.playerOwnedCoins;
+      }
+    });
     res.json({ success: true });
   });
 

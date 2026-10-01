@@ -1,33 +1,39 @@
 import { EngineState } from './state.js';
-import { executeTrade } from './trade.js';
-import { getAllEnabledTradingBots, advanceBotNextRun, addBotRunTotals } from '../db/queries.js';
+import { executeTrade, StaleBotFiringError } from './trade.js';
+import { getAllEnabledTradingBots, advanceBotNextRunIfDue, prunePriorBotTradeRequests } from '../db/queries.js';
 
-// Fires every enabled bot whose next_run_at has elapsed, via the exact same
-// executeTrade used by the manual /trade route. Each bot's attempt is wrapped
-// in its own try/catch INSIDE the loop (not a single .catch around the whole
-// batch) so one player's insufficient balance/holding can never stop the job
-// for the others — same isolation style as persistPoolSnapshots in index.ts.
+// Fires enabled bots through the same executeTrade path as manual trades. The
+// captured due timestamp is revalidated under the DB row lock before execution.
 export async function runTradingBots(state: EngineState): Promise<void> {
   const bots = await getAllEnabledTradingBots();
   const now = Date.now();
   for (const bot of bots) {
     if (!bot.next_run_at || new Date(bot.next_run_at).getTime() > now) continue;
+    const scheduledAt = new Date(bot.next_run_at).toISOString();
+    const requestId = `bot:${scheduledAt}`;
+    let replayed = false;
     try {
-      const result = bot.side === 'buy'
-        ? await executeTrade(state, bot.player_id, { coinId: bot.coin_id!, side: 'buy', amountUsdd: bot.amount! })
-        : await executeTrade(state, bot.player_id, { coinId: bot.coin_id!, side: 'sell', amountCoin: bot.amount! });
-      // result.usddAmount is already the net-received amount for a sell, but
-      // for a buy it's the pool-side net-of-fee amount — add the fee back so
-      // both sides accumulate the same "total charged/received" volume
-      // convention recordTradeVolume uses elsewhere.
-      const usddDelta = bot.side === 'buy' ? result.usddAmount + result.fee : result.usddAmount;
-      await addBotRunTotals(bot.player_id, usddDelta, result.coinAmount).catch(() => {});
-    } catch {
+      const result = await executeTrade(state, bot.player_id, {
+        coinId: bot.coin_id!,
+        side: bot.side!,
+        ...(bot.side === 'buy' ? { amountUsdd: bot.amount! } : { amountCoin: bot.amount! }),
+        requestId,
+        botFiring: { scheduledAt, intervalMs: bot.interval_ms! },
+      });
+      replayed = result.replayed;
+    } catch (error) {
+      if (error instanceof StaleBotFiringError) continue;
       // insufficient balance/holding, coin not found, below MIN_TRADE_USDD, etc.
       // — skip this firing, never let it propagate out of the loop.
+      const rescheduled = await advanceBotNextRunIfDue(bot.player_id, bot.interval_ms!, scheduledAt).catch(() => false);
+      if (rescheduled) await prunePriorBotTradeRequests(bot.player_id, requestId).catch(() => {});
+      continue;
     }
-    // Reschedule unconditionally (success, skip, or error) so a persistently
-    // failing bot retries once per interval instead of hot-looping every poll.
-    await advanceBotNextRun(bot.player_id, bot.interval_ms!).catch(() => {});
+    if (replayed) {
+      const rescheduled = await advanceBotNextRunIfDue(bot.player_id, bot.interval_ms!, scheduledAt).catch(() => false);
+      if (rescheduled) await prunePriorBotTradeRequests(bot.player_id, requestId).catch(() => {});
+    } else {
+      await prunePriorBotTradeRequests(bot.player_id, requestId).catch(() => {});
+    }
   }
 }

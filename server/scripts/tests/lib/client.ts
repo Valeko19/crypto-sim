@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 // Minimal HTTP client for driving a running crypto-sim server from
 // standalone test scripts. Deliberately talks only over HTTP (no direct DB
 // or in-process imports of engine code) so these tests exercise exactly the
@@ -37,10 +39,13 @@ async function rawFetch(
 ): Promise<{ status: number; body: any }> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json', ...extraHeaders };
   if (playerId) headers['X-Dev-Player-Id'] = playerId;
+  const requestBody = method === 'POST' && path === '/trade' && body && typeof body === 'object' && !Array.isArray(body)
+    ? { ...body, requestId: randomUUID() }
+    : body;
   const res = await fetch(`${baseUrl}/api${path}`, {
     method,
     headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    body: requestBody !== undefined ? JSON.stringify(requestBody) : undefined,
   });
   let json: any = null;
   try {

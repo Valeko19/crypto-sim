@@ -10,6 +10,7 @@ export async function resetAllPlayers(): Promise<number> {
   await db.query('DELETE FROM player_rank_progress');
   await db.query('DELETE FROM staking_positions');
   await db.query('DELETE FROM player_earned_totals');
+  await db.query('DELETE FROM trade_requests');
   // This runs BEFORE createInitialState() in index.ts's main() — there's no
   // live EngineState yet to touch directly, only this saved-snapshot table.
   // Dropping it makes the boot sequence that follows fall through to

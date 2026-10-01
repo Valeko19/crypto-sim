@@ -1,8 +1,15 @@
+import { createHash } from 'node:crypto';
+import { db } from '../db/index.js';
 import { EngineState } from './state.js';
-import { buyWithUsdd, sellCoin, quoteSellExecution, price, isFinitePositiveAmount } from './amm.js';
+import { Pool, TradeResult, buyWithUsdd, sellCoin, quoteSellExecution, price, isFinitePositiveAmount } from './amm.js';
 import { COIN_MAP, tradeFeePct, MIN_TRADE_USDD } from '../config/coins.js';
-import { ensurePlayerExists, getPlayer, applyBuy, applySell, getHolding, reservedStakedAmount } from '../db/queries.js';
+import {
+  ensurePlayerExists, getPlayer, applyBuy, applySell, getHolding, reservedStakedAmount,
+  reserveTradeRequest, getTradeRequest, saveTradeRequestResponse, savePoolSnapshotWithClient,
+  isCurrentDueBotFiring, settleBotFiring,
+} from '../db/queries.js';
 import { recordTradeVolume } from './dailyVolume.js';
+import { withMarketLock } from './marketLock.js';
 
 export class TradeError extends Error {
   status: number;
@@ -12,9 +19,22 @@ export class TradeError extends Error {
   }
 }
 
+export class StaleBotFiringError extends Error {
+  constructor() {
+    super('bot firing is no longer current');
+  }
+}
+
+export interface BotFiring {
+  scheduledAt: string;
+  intervalMs: number;
+}
+
 export interface TradeParams {
   coinId: string;
   side: 'buy' | 'sell';
+  requestId?: string;
+  botFiring?: BotFiring;
   amountUsdd?: number;
   amountCoin?: number;
   // Sell only: the client's sell slider was at exactly 100% (regardless of
@@ -28,15 +48,17 @@ export interface TradeParams {
   useMax?: boolean;
 }
 
+export type ExecutedTradeResult = TradeResult & { fee: number; replayed: boolean };
+
 // Single implementation of a trade, shared by the manual POST /trade route
 // and the trading-bot background job — the bot must inherit the exact same
 // fee/slippage/reserve behavior, not a second copy of it.
-export async function executeTrade(state: EngineState, playerId: string, params: TradeParams) {
-  return withPlayerLock(playerId, () => executeTradeUnlocked(state, playerId, params));
+export async function executeTrade(state: EngineState, playerId: string, params: TradeParams): Promise<ExecutedTradeResult> {
+  return withPlayerLock(playerId, () => withMarketLock(() => executeTradeUnlocked(state, playerId, params)));
 }
 
 async function executeTradeUnlocked(state: EngineState, playerId: string, params: TradeParams) {
-  const { coinId, side, amountUsdd, amountCoin, useMax } = params;
+  const { coinId, side, amountUsdd, amountCoin, useMax, requestId, botFiring } = params;
   const cs = state.coins[coinId];
   const cfg = COIN_MAP[coinId];
   if (!cs || !cfg) throw new TradeError('coin not found', 404);
@@ -44,6 +66,9 @@ async function executeTradeUnlocked(state: EngineState, playerId: string, params
   if (useMax !== undefined && typeof useMax !== 'boolean') throw new TradeError('invalid amount');
   if (amountUsdd !== undefined && !isFinitePositiveAmount(amountUsdd)) throw new TradeError('invalid amount');
   if (amountCoin !== undefined && !isFinitePositiveAmount(amountCoin)) throw new TradeError('invalid amount');
+  if (requestId !== undefined && (typeof requestId !== 'string' || requestId.length < 1 || requestId.length > 128)) {
+    throw new TradeError('invalid request id');
+  }
 
   let buyAmount: number | undefined;
   let sellCoinAmount: number | undefined;
@@ -67,70 +92,112 @@ async function executeTradeUnlocked(state: EngineState, playerId: string, params
   // the real username isn't known) — must self-ensure without ever touching
   // username, so it can't clobber a real Telegram name with a placeholder.
   await ensurePlayerExists(playerId);
-  const player = await getPlayer(playerId);
+  const requestHash = requestId === undefined ? undefined : hashTradeParams({ coinId, side, amountUsdd, amountCoin, useMax });
+  const outcome = await db.transaction(async tx => {
+    if (botFiring && !await isCurrentDueBotFiring(tx, playerId, botFiring.scheduledAt)) {
+      throw new StaleBotFiringError();
+    }
+    if (requestId !== undefined) {
+      const ownsRequest = await reserveTradeRequest(tx, playerId, requestId, requestHash!);
+      if (!ownsRequest) {
+        const previous = await getTradeRequest(tx, playerId, requestId);
+        if (!previous) throw new Error('trade request reservation disappeared');
+        if (previous.request_hash !== requestHash) throw new TradeError('request id already used with different parameters', 409);
+        if (!previous.response) throw new Error('trade request has no committed response');
+        return { replayed: true as const, response: previous.response as TradeResult & { fee: number } };
+      }
+    }
 
-  if (side === 'buy') {
-    const usddIn = buyAmount!;
-    if (!Number.isFinite(player.usdd_balance)) throw new TradeError('invalid balance');
-    if (usddIn > player.usdd_balance) throw new TradeError('insufficient balance');
-    const fee = usddIn * tradeFeePct(coinId);
-    const netIn = usddIn - fee;
-    const result = buyWithUsdd(cs.pool, netIn);
-    // buyWithUsdd's own MAX_RESERVE_FRACTION cap can execute LESS than the
-    // requested netIn (result.usddAmount < netIn on a very large trade against
-    // a thin pool) — scale the fee down by the same executed fraction and
-    // charge the player only for what actually happened, never for the
-    // untouched leftover of their original request.
-    const executedFraction = netIn > 0 ? result.usddAmount / netIn : 1;
-    const actualFee = fee * executedFraction;
-    const totalCharged = result.usddAmount + actualFee;
-    await applyBuy(playerId, coinId, result.coinAmount, totalCharged, result.avgPrice, actualFee);
-    cs.playerOwnedCoins += result.coinAmount;
-    recordTradeVolume(playerId, totalCharged);
-    return { ...result, fee: actualFee };
-  } else if (side === 'sell') {
-    const holding = await getHolding(playerId, coinId);
-    if (!holding || !isFinitePositiveAmount(holding.amount)) throw new TradeError('no holding to sell');
-    const reserved = await reservedStakedAmount(playerId, coinId);
-    if (!Number.isFinite(reserved) || reserved < 0) throw new TradeError('invalid holding');
-    const sellable = holding.amount - reserved;
-    let coinIn: number;
-    if (useMax) {
-      coinIn = sellable;
-    } else if (sellCoinAmount !== undefined) {
-      coinIn = sellCoinAmount;
+    const player = await getPlayer(playerId, tx);
+    const nextPool: Pool = { ...cs.pool };
+    let response: TradeResult & { fee: number };
+    let coinDelta: number;
+    let volumeDelta: number;
+
+    if (side === 'buy') {
+      const usddIn = buyAmount!;
+      if (!Number.isFinite(player.usdd_balance)) throw new TradeError('invalid balance');
+      if (usddIn > player.usdd_balance) throw new TradeError('insufficient balance');
+      const fee = usddIn * tradeFeePct(coinId);
+      const netIn = usddIn - fee;
+      const result = buyWithUsdd(nextPool, netIn);
+      // Preserve the original fee scaling when the AMM reserve cap limits execution.
+      const executedFraction = netIn > 0 ? result.usddAmount / netIn : 1;
+      const actualFee = fee * executedFraction;
+      const totalCharged = result.usddAmount + actualFee;
+      response = { ...result, fee: actualFee };
+      coinDelta = result.coinAmount;
+      volumeDelta = totalCharged;
+      await applyBuy(tx, playerId, coinId, result.coinAmount, totalCharged, result.avgPrice, actualFee);
     } else {
-      const currentPrice = price(cs.pool);
-      if (!isFinitePositiveAmount(currentPrice)) throw new TradeError('invalid market price');
-      coinIn = sellUsddAmount! / currentPrice;
+      const holding = await getHolding(playerId, coinId, tx);
+      if (!holding || !isFinitePositiveAmount(holding.amount)) throw new TradeError('no holding to sell');
+      const reserved = await reservedStakedAmount(playerId, coinId, tx);
+      if (!Number.isFinite(reserved) || reserved < 0) throw new TradeError('invalid holding');
+      const sellable = holding.amount - reserved;
+      let coinIn: number;
+      if (useMax) {
+        coinIn = sellable;
+      } else if (sellCoinAmount !== undefined) {
+        coinIn = sellCoinAmount;
+      } else {
+        const currentPrice = price(nextPool);
+        if (!isFinitePositiveAmount(currentPrice)) throw new TradeError('invalid market price');
+        coinIn = sellUsddAmount! / currentPrice;
+      }
+      if (!isFinitePositiveAmount(coinIn) || !isFinitePositiveAmount(sellable)) throw new TradeError('invalid amount');
+      if (coinIn > sellable) throw new TradeError('coins are staked and cannot be sold');
+      coinIn = Math.min(coinIn, sellable);
+      const grossUsddOut = quoteSellExecution(nextPool, coinIn).usddAmount;
+      if (grossUsddOut < MIN_TRADE_USDD) {
+        throw new TradeError(`minimum trade size is ${MIN_TRADE_USDD} USDD`);
+      }
+      const result = sellCoin(nextPool, coinIn);
+      const fee = result.usddAmount * tradeFeePct(coinId);
+      const netOut = result.usddAmount - fee;
+      response = { ...result, usddAmount: netOut, fee };
+      coinDelta = -result.coinAmount;
+      volumeDelta = netOut;
+      await applySell(tx, playerId, coinId, result.coinAmount, netOut, result.avgPrice, fee);
     }
-    if (!isFinitePositiveAmount(coinIn) || !isFinitePositiveAmount(sellable)) throw new TradeError('invalid amount');
-    if (coinIn > sellable) throw new TradeError('coins are staked and cannot be sold');
-    coinIn = Math.min(coinIn, sellable);
-    const grossUsddOut = quoteSellExecution(cs.pool, coinIn).usddAmount;
-    if (grossUsddOut < MIN_TRADE_USDD) {
-      throw new TradeError(`minimum trade size is ${MIN_TRADE_USDD} USDD`);
+
+    await savePoolSnapshotWithClient(tx, coinId, nextPool.coinReserve, nextPool.usddReserve);
+    if (requestId !== undefined) await saveTradeRequestResponse(tx, playerId, requestId, response);
+    if (botFiring) {
+      await settleBotFiring(
+        tx,
+        playerId,
+        botFiring.scheduledAt,
+        volumeDelta,
+        Math.abs(coinDelta),
+        new Date(Date.now() + botFiring.intervalMs).toISOString()
+      );
     }
-    const result = sellCoin(cs.pool, coinIn);
-    const fee = result.usddAmount * tradeFeePct(coinId);
-    const netOut = result.usddAmount - fee;
-    // sellCoin can itself cap coinIn via MAX_RESERVE_FRACTION — result.coinAmount
-    // is what actually entered the pool, which can be less than the requested
-    // coinIn. Must remove exactly that much from the holding, not the
-    // originally-requested coinIn, or the player loses coins that were never
-    // actually sold.
-    await applySell(playerId, coinId, result.coinAmount, netOut, result.avgPrice, fee);
-    cs.playerOwnedCoins = Math.max(0, cs.playerOwnedCoins - result.coinAmount);
-    recordTradeVolume(playerId, netOut);
-    return { ...result, usddAmount: netOut, fee };
+    return { replayed: false as const, response, nextPool, coinDelta, volumeDelta };
+  });
+
+  if (!outcome.replayed) {
+    cs.pool.coinReserve = outcome.nextPool.coinReserve;
+    cs.pool.usddReserve = outcome.nextPool.usddReserve;
+    cs.playerOwnedCoins = Math.max(0, cs.playerOwnedCoins + outcome.coinDelta);
+    recordTradeVolume(playerId, outcome.volumeDelta);
   }
-  throw new TradeError('side must be buy or sell');
+  return { ...outcome.response, replayed: outcome.replayed };
 }
 
-// Serializes trades per player so a manual /trade request and a bot-fired
-// trade for the same player can't interleave their read-then-write DB calls
-// (applyBuy/applySell) — there are no SQL transactions in this project, so
-// this promise-chaining mutex is the cheap way to close that window.
+function hashTradeParams(params: Omit<TradeParams, 'requestId'>): string {
+  const canonical = JSON.stringify({
+    coinId: params.coinId,
+    side: params.side,
+    amountUsdd: params.amountUsdd ?? null,
+    amountCoin: params.amountCoin ?? null,
+    useMax: params.useMax ?? false,
+  });
+  return createHash('sha256').update(canonical).digest('hex');
+}
+
+// Serializes requests from the same player; withMarketLock separately protects
+// the shared pool, tick and persistence lifecycle for all players.
 const playerLocks = new Map<string, Promise<unknown>>();
 
 function withPlayerLock<T>(playerId: string, fn: () => Promise<T>): Promise<T> {

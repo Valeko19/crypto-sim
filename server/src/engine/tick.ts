@@ -4,6 +4,7 @@ import { repriceTo, price, maxTradeableReserve } from './amm.js';
 import { gravityPctPerMin } from './gravity.js';
 import { logReturnToDriftPctPerMin } from './driftMath.js';
 import { maybeTriggerNews, newsDriftContribution, advanceNewsEvent } from './news.js';
+import { withMarketLock } from './marketLock.js';
 
 const TICK_MS = 1000;
 const FIVE_MIN_MS = 5 * 60_000;
@@ -633,8 +634,10 @@ export function tick(state: EngineState) {
 
 export function startEngineLoop(state: EngineState, onTick: () => void): NodeJS.Timeout {
   return setInterval(() => {
-    tick(state);
-    onTick();
+    void withMarketLock(() => {
+      tick(state);
+      onTick();
+    }).catch(err => console.error('market tick failed', err));
   }, TICK_MS);
 }
 

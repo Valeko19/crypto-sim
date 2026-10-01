@@ -58,6 +58,15 @@ export async function initDb() {
       usdd_reserve DOUBLE PRECISION NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS trade_requests (
+      player_id TEXT NOT NULL REFERENCES players(id),
+      request_id TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      response JSONB,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (player_id, request_id)
+    );
+
     -- Staking never moves coins out of player_holdings — a position only
     -- *reserves* part of the holding from being sold (see reservedStakedAmount
     -- in db/queries.ts). Real wall-clock time throughout (staked_at/lock_until/

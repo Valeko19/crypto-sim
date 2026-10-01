@@ -7,7 +7,7 @@ import { MACRO_CONFIG } from './engine/macroCycle.js';
 import { price, maxTradeableReserve } from './engine/amm.js';
 import { COINS } from './config/coins.js';
 import { initDb } from './db/index.js';
-import { getAllPoolSnapshots, savePoolSnapshot, getTotalHeldForCoin, pruneOldTradeLogEntries } from './db/queries.js';
+import { getAllPoolSnapshots, getTotalHeldForCoin, pruneOldTradeLogEntries } from './db/queries.js';
 import { createRouter } from './api/routes.js';
 import { createAdminRouter } from './api/adminRoutes.js';
 import { createWsServer } from './ws/server.js';
@@ -18,6 +18,7 @@ import { runTradingBots } from './engine/tradingBot.js';
 import { BOT_POLL_INTERVAL_MS } from './config/tradingBot.js';
 import { checkRankUpRewards } from './engine/rankRewards.js';
 import { maybeRunPlayerResetOnBoot } from './admin/playerReset.js';
+import { persistPoolSnapshots } from './engine/poolPersistence.js';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 8787;
 
@@ -54,13 +55,6 @@ async function main() {
     // gravity.ts) from the same real-holdings total used above, so background
     // drift never gets credited for price support that only real trades earned.
     cs.playerOwnedCoins = totalHeld;
-  }
-
-  async function persistPoolSnapshots() {
-    for (const cfg of COINS) {
-      const pool = state.coins[cfg.id].pool;
-      await savePoolSnapshot(cfg.id, pool.coinReserve, pool.usddReserve).catch(() => {});
-    }
   }
 
   const app = express();
@@ -121,7 +115,7 @@ async function main() {
   });
 
   setInterval(() => {
-    persistPoolSnapshots().catch(() => {});
+    persistPoolSnapshots(state).catch(() => {});
   }, 10_000);
 
   setInterval(() => {
@@ -142,7 +136,7 @@ async function main() {
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.on(signal, () => {
-      persistPoolSnapshots().finally(() => process.exit(0));
+      persistPoolSnapshots(state).finally(() => process.exit(0));
     });
   }
 
