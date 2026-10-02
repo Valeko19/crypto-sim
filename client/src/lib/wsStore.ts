@@ -1,5 +1,5 @@
 import { MarketStatus, PortfolioView, Candle, API_BASE } from './api';
-import { getIdentityForWs } from './telegram';
+import { clearSessionToken, getIdentityForWs } from './telegram';
 
 export interface LivePriceInfo { price: number; changePct: number; }
 
@@ -15,12 +15,22 @@ interface WsState {
 // same top-level object reference forever would silently stop all re-renders.
 let state: WsState = { prices: {}, marketStatus: null, portfolio: null, candles: {} };
 const listeners = new Set<() => void>();
+const SESSION_ACTIVITY_INTERVAL_MS = 5 * 60 * 1000;
 
 function emit() {
   for (const l of listeners) l();
 }
 
-function connect() {
+async function connect() {
+  let identity: Awaited<ReturnType<typeof getIdentityForWs>>;
+  try {
+    identity = await getIdentityForWs();
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('authorization expired')) return;
+    setTimeout(() => { void connect(); }, 5000);
+    return;
+  }
+
   // Same-origin by default (dev proxy handles /ws — see vite.config.ts); a
   // split-domain deploy sets VITE_API_BASE to the server's http(s) URL, which
   // is swapped to the matching ws(s) scheme here.
@@ -28,18 +38,28 @@ function connect() {
     ? `${API_BASE.replace(/^http/, 'ws')}/ws`
     : `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`;
   const ws = new WebSocket(wsUrl);
+  let activityTimer: ReturnType<typeof setInterval> | null = null;
 
   // Identity is sent as the first message after open, not a query param on
   // wsUrl — the browser WebSocket API can't set custom headers, and a query
   // string would land in default access logs (unlike the REST header path).
   ws.onopen = () => {
-    ws.send(JSON.stringify({ type: 'auth', ...getIdentityForWs() }));
+    ws.send(JSON.stringify({ type: 'auth', ...identity }));
+    if ('sessionToken' in identity) {
+      activityTimer = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'activity' }));
+      }, SESSION_ACTIVITY_INTERVAL_MS);
+    }
   };
 
   ws.onmessage = ev => {
     try {
       const { type, payload } = JSON.parse(ev.data);
-      if (type === 'price_updates') {
+      if (type === 'auth_error') {
+        if (activityTimer) clearInterval(activityTimer);
+        if ('sessionToken' in identity) clearSessionToken(identity.sessionToken);
+        ws.close();
+      } else if (type === 'price_updates') {
         const nextPrices: Record<string, LivePriceInfo> = { ...state.prices };
         for (const c of payload.coins) nextPrices[c.id] = { price: c.price, changePct: c.changePct };
         state = { ...state, prices: nextPrices, marketStatus: payload.marketStatus };
@@ -59,7 +79,8 @@ function connect() {
   };
 
   ws.onclose = () => {
-    setTimeout(connect, 1500);
+    if (activityTimer) clearInterval(activityTimer);
+    setTimeout(() => { void connect(); }, 1500);
   };
 }
 

@@ -26,6 +26,17 @@ export async function initDb() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
 
+    CREATE TABLE IF NOT EXISTS auth_sessions (
+      token_hash TEXT PRIMARY KEY,
+      player_id TEXT NOT NULL REFERENCES players(id),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_activity_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      idle_expires_at TIMESTAMPTZ NOT NULL,
+      absolute_expires_at TIMESTAMPTZ NOT NULL,
+      revoked_at TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS auth_sessions_player_id_idx ON auth_sessions(player_id);
+
     -- Added via ALTER rather than the CREATE TABLE above so this is safe to
     -- run against an already-deployed players table (CREATE TABLE IF NOT
     -- EXISTS is a no-op there; ADD COLUMN IF NOT EXISTS is not) — same

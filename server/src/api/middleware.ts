@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { resolveIdentity } from '../auth/telegram.js';
+import { resolveAuthSession } from '../auth/sessions.js';
 import { isBetaAllowed, BETA_DENIED_MESSAGE } from '../auth/beta.js';
 import { ensurePlayer, getPlayer } from '../db/queries.js';
 
@@ -12,7 +13,15 @@ declare global {
 }
 
 export async function resolvePlayer(req: Request, res: Response, next: NextFunction) {
-  const identity = resolveIdentity(req.header('X-Telegram-Init-Data') ?? undefined, req.header('X-Dev-Player-Id') ?? undefined);
+  const sessionToken = req.header('X-Session-Token');
+  if (sessionToken) {
+    const identity = await resolveAuthSession(sessionToken);
+    if (!identity) return res.status(401).json({ error: 'unauthorized' });
+    req.playerId = identity.playerId;
+    return next();
+  }
+
+  const identity = resolveIdentity(undefined, req.header('X-Dev-Player-Id') ?? undefined);
   if (!identity) return res.status(401).json({ error: 'unauthorized' });
 
   // The beta allowlist only ever gates a brand-new player's FIRST visit —

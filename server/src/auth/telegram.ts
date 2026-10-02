@@ -1,4 +1,4 @@
-import { createHmac } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 // Dev mode is only allowed outside production (or an explicit ALLOW_DEV_AUTH=1)
@@ -18,11 +18,11 @@ export interface Identity {
 // hash = HMAC_SHA256(key=secret_key, data=data_check_string)
 // where data_check_string is every field except `hash`, sorted alphabetically
 // by key and newline-joined as "key=value".
-function validateInitData(initData: string): Identity | null {
+export function validateInitData(initData: string, nowMs = Date.now()): Identity | null {
   if (!BOT_TOKEN) return null;
   const params = new URLSearchParams(initData);
   const hash = params.get('hash');
-  if (!hash) return null;
+  if (!hash || !/^[0-9a-f]{64}$/i.test(hash)) return null;
   params.delete('hash');
   const dataCheckString = [...params.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
@@ -30,13 +30,27 @@ function validateInitData(initData: string): Identity | null {
     .join('\n');
   const secretKey = createHmac('sha256', 'WebAppData').update(BOT_TOKEN).digest();
   const computedHash = createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
-  if (computedHash !== hash) return null;
+  const expectedHash = Buffer.from(computedHash, 'hex');
+  const receivedHash = Buffer.from(hash, 'hex');
+  if (receivedHash.length !== expectedHash.length || !timingSafeEqual(expectedHash, receivedHash)) return null;
+  const authDateRaw = params.get('auth_date');
+  if (!authDateRaw || !/^\d+$/.test(authDateRaw)) return null;
+  const authDate = Number(authDateRaw);
+  if (!Number.isSafeInteger(authDate)) return null;
+  const nowSeconds = Math.floor(nowMs / 1000);
+  if (authDate < nowSeconds - 5 * 60 || authDate > nowSeconds + 60) return null;
   const userJson = params.get('user');
   if (!userJson) return null;
-  const user = JSON.parse(userJson);
+  let user: { id?: unknown; username?: unknown; first_name?: unknown };
+  try {
+    user = JSON.parse(userJson);
+  } catch {
+    return null;
+  }
+  if (typeof user.id !== 'number' || !Number.isSafeInteger(user.id) || user.id <= 0) return null;
   return {
     playerId: `tg_${user.id}`,
-    username: user.username ? `@${user.username}` : String(user.first_name ?? user.id),
+    username: typeof user.username === 'string' && user.username ? `@${user.username}` : String(user.first_name ?? user.id),
   };
 }
 

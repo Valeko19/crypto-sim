@@ -9,6 +9,7 @@ import { COINS } from './config/coins.js';
 import { initDb } from './db/index.js';
 import { getAllPoolSnapshots, getTotalHeldForCoin, pruneOldTradeLogEntries } from './db/queries.js';
 import { createRouter } from './api/routes.js';
+import { createAuthRouter } from './api/authRoutes.js';
 import { createAdminRouter } from './api/adminRoutes.js';
 import { createWsServer } from './ws/server.js';
 import { computeAllPortfolios } from './api/helpers.js';
@@ -68,6 +69,7 @@ async function main() {
   // mounting admin first lets it fully handle its own path before the main
   // router ever sees the request.
   app.use('/api/admin', createAdminRouter());
+  app.use('/api/auth', createAuthRouter());
   app.use('/api', createRouter(state));
 
   const httpServer = http.createServer(app);

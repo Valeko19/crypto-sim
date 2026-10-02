@@ -1,4 +1,4 @@
-import { getIdentityHeaders } from './telegram';
+import { getIdentityHeaders, refreshIdentityHeaders } from './telegram';
 
 export interface CoinListItem {
   id: string;
@@ -123,10 +123,19 @@ export interface StakingCoinView {
 export const API_BASE = import.meta.env.VITE_API_BASE ?? '';
 
 async function req<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}/api${path}`, {
+  const identityHeaders = await getIdentityHeaders();
+  const url = `${API_BASE}/api${path}`;
+  const requestOptions: RequestInit = {
     ...options,
-    headers: { 'Content-Type': 'application/json', ...getIdentityHeaders(), ...options?.headers },
-  });
+    headers: { 'Content-Type': 'application/json', ...identityHeaders, ...options?.headers },
+  };
+  let res = await fetch(url, requestOptions);
+  const sessionToken = identityHeaders['X-Session-Token'];
+  if (res.status === 401 && sessionToken) {
+    const refreshedHeaders = await refreshIdentityHeaders(sessionToken);
+    requestOptions.headers = { 'Content-Type': 'application/json', ...refreshedHeaders, ...options?.headers };
+    res = await fetch(url, requestOptions);
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error ?? `Request failed: ${path}`);
