@@ -158,12 +158,12 @@ export const api = {
   }),
   getLeaderboard: (league: string) => req<LeaderboardView>(`/leaderboard?league=${encodeURIComponent(league)}`),
   getRanks: () => req<{ ranks: RankInfo[] }>('/ranks'),
-  quoteTrade: (body: { coinId: string; side: 'buy' | 'sell'; amountUsdd?: number; amountCoin?: number }) =>
+  quoteTrade: (body: { coinId: string; side: 'buy' | 'sell'; amountUsdd?: number; amountCoin?: number; useMax?: boolean }) =>
     req<TradeQuote>(
       '/trade/quote', { method: 'POST', body: JSON.stringify(body) }
     ),
   trade: (body: { coinId: string; side: 'buy' | 'sell'; amountUsdd?: number; amountCoin?: number; useMax?: boolean }) =>
-    req<{ coinAmount: number; usddAmount: number; avgPrice: number; slippagePct: number; fee: number }>(
+    req<{ coinAmount: number; usddAmount: number; avgPrice: number; slippagePct: number; fee: number; totalCharged?: number }>(
       '/trade', { method: 'POST', body: JSON.stringify({ ...body, requestId: globalThis.crypto.randomUUID() }) }
     ),
   getStaking: () => req<{

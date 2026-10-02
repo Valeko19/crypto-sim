@@ -10,6 +10,7 @@ import {
 } from '../db/queries.js';
 import { recordTradeVolume } from './dailyVolume.js';
 import { withMarketLock } from './marketLock.js';
+import { calculateBuyCharge } from './buyBudget.js';
 
 export class TradeError extends Error {
   status: number;
@@ -37,7 +38,8 @@ export interface TradeParams {
   botFiring?: BotFiring;
   amountUsdd?: number;
   amountCoin?: number;
-  // Sell only: the client's sell slider was at exactly 100% (regardless of
+  // BUY: use the current server-side USDD balance as the inclusive budget.
+  // SELL: the client's sell slider was at exactly 100% (regardless of
   // which unit it's displaying). Tells the server to use ITS OWN current
   // sellable balance directly instead of reconstructing an amount from
   // amountUsdd/amountCoin — for amountUsdd specifically, that reconstruction
@@ -48,7 +50,8 @@ export interface TradeParams {
   useMax?: boolean;
 }
 
-export type ExecutedTradeResult = TradeResult & { fee: number; replayed: boolean };
+type TradeResponse = TradeResult & { fee: number; totalCharged?: number };
+export type ExecutedTradeResult = TradeResponse & { replayed: boolean };
 
 // Single implementation of a trade, shared by the manual POST /trade route
 // and the trading-bot background job — the bot must inherit the exact same
@@ -74,9 +77,11 @@ async function executeTradeUnlocked(state: EngineState, playerId: string, params
   let sellCoinAmount: number | undefined;
   let sellUsddAmount: number | undefined;
   if (side === 'buy') {
-    if (!isFinitePositiveAmount(amountUsdd)) throw new TradeError('invalid amount');
-    if (amountUsdd < MIN_TRADE_USDD) throw new TradeError(`minimum trade is ${MIN_TRADE_USDD} USDD`);
-    buyAmount = amountUsdd;
+    if (!useMax) {
+      if (!isFinitePositiveAmount(amountUsdd)) throw new TradeError('invalid amount');
+      if (amountUsdd < MIN_TRADE_USDD) throw new TradeError(`minimum trade is ${MIN_TRADE_USDD} USDD`);
+      buyAmount = amountUsdd;
+    }
   } else if (useMax) {
     // Explicit amounts are still validated above even though max sell uses the
     // server's own current sellable balance instead of either client amount.
@@ -104,28 +109,29 @@ async function executeTradeUnlocked(state: EngineState, playerId: string, params
         if (!previous) throw new Error('trade request reservation disappeared');
         if (previous.request_hash !== requestHash) throw new TradeError('request id already used with different parameters', 409);
         if (!previous.response) throw new Error('trade request has no committed response');
-        return { replayed: true as const, response: previous.response as TradeResult & { fee: number } };
+        return { replayed: true as const, response: previous.response as TradeResponse };
       }
     }
 
+    if (side === 'buy' && useMax) {
+      await tx.query('SELECT id FROM players WHERE id = $1 FOR UPDATE', [playerId]);
+    }
     const player = await getPlayer(playerId, tx);
     const nextPool: Pool = { ...cs.pool };
-    let response: TradeResult & { fee: number };
+    let response: TradeResponse;
     let coinDelta: number;
     let volumeDelta: number;
 
     if (side === 'buy') {
-      const usddIn = buyAmount!;
+      const usddIn = useMax ? player.usdd_balance : buyAmount!;
       if (!Number.isFinite(player.usdd_balance)) throw new TradeError('invalid balance');
+      if (usddIn < MIN_TRADE_USDD) throw new TradeError(`minimum trade is ${MIN_TRADE_USDD} USDD`);
       if (usddIn > player.usdd_balance) throw new TradeError('insufficient balance');
       const fee = usddIn * tradeFeePct(coinId);
       const netIn = usddIn - fee;
       const result = buyWithUsdd(nextPool, netIn);
-      // Preserve the original fee scaling when the AMM reserve cap limits execution.
-      const executedFraction = netIn > 0 ? result.usddAmount / netIn : 1;
-      const actualFee = fee * executedFraction;
-      const totalCharged = result.usddAmount + actualFee;
-      response = { ...result, fee: actualFee };
+      const { fee: actualFee, totalCharged } = calculateBuyCharge(usddIn, tradeFeePct(coinId), result.usddAmount);
+      response = { ...result, fee: actualFee, totalCharged };
       coinDelta = result.coinAmount;
       volumeDelta = totalCharged;
       await applyBuy(tx, playerId, coinId, result.coinAmount, totalCharged, result.avgPrice, actualFee);

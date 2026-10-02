@@ -66,7 +66,7 @@ export function CoinDetailScreen() {
   const [amount, setAmount] = useState('');
   // True exactly when the CURRENT amount came from dragging/tapping the
   // slider to 100%, cleared by any manual edit — lets submit() tell the
-  // server "sell everything you show as sellable" (useMax) regardless of
+  // server "use my current balance/holding" (useMax) regardless of
   // whether price moves between now and execution, instead of trusting a
   // client-computed amount that could drift from the real holding.
   const [isMaxAmount, setIsMaxAmount] = useState(false);
@@ -310,7 +310,8 @@ export function CoinDetailScreen() {
   const available = side === 'buy'
     ? (mode === 'usdd' ? balance : (livePrice > 0 ? balance / livePrice : 0))
     : (mode === 'usdd' ? (holding?.amount ?? 0) * livePrice : (holding?.amount ?? 0));
-  const sliderPct = available > 0 ? Math.max(0, Math.min(100, ((Number(amount) || 0) / available) * 100)) : 0;
+  const sliderPct = side === 'buy' && isMaxAmount ? 100
+    : available > 0 ? Math.max(0, Math.min(100, ((Number(amount) || 0) / available) * 100)) : 0;
 
   function applyPct(pct: number) {
     const raw = available * (pct / 100);
@@ -350,7 +351,8 @@ export function CoinDetailScreen() {
 
   async function fetchQuote(num: number) {
     try {
-      const body = mode === 'usdd' ? { coinId, side, amountUsdd: num } : { coinId, side, amountCoin: num };
+      const body = side === 'buy' && isMaxAmount ? { coinId, side, useMax: true }
+        : mode === 'usdd' ? { coinId, side, amountUsdd: num } : { coinId, side, amountCoin: num };
       const res = await api.quoteTrade(body);
       setQuote(res);
     } catch {
@@ -364,7 +366,7 @@ export function CoinDetailScreen() {
     if (!num || num <= 0) { setQuote(null); return; }
     const timer = setTimeout(() => fetchQuote(num), 300);
     return () => clearTimeout(timer);
-  }, [amount, side, mode, coinId]);
+  }, [amount, side, mode, coinId, isMaxAmount]);
 
   async function submit() {
     const num = Number(amount);
@@ -373,7 +375,8 @@ export function CoinDetailScreen() {
     setMessage(null);
     try {
       const body: { coinId: string; side: 'buy' | 'sell'; amountUsdd?: number; amountCoin?: number; useMax?: boolean } =
-        mode === 'usdd' ? { coinId, side, amountUsdd: num } : { coinId, side, amountCoin: num };
+        side === 'buy' && isMaxAmount ? { coinId, side, useMax: true }
+          : mode === 'usdd' ? { coinId, side, amountUsdd: num } : { coinId, side, amountCoin: num };
       // See isMaxAmount's declaration — tells the server to sell its own
       // current sellable balance directly rather than reconstruct one from
       // amountUsdd/amountCoin, so a 100% sell can't be thrown off by price

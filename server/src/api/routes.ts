@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { EngineState, recentChangePct } from '../engine/state.js';
 import { quoteBuyExecution, quoteSellExecution, isFinitePositiveAmount, price } from '../engine/amm.js';
 import { executeTrade, TradeError } from '../engine/trade.js';
+import { calculateBuyCharge } from '../engine/buyBudget.js';
 import { claimQuest, QuestClaimError } from '../engine/quests.js';
 import { forcePhase, fearGreedLabel, phaseProgress, tick } from '../engine/tick.js';
 import { justifiedPrice } from '../engine/gravity.js';
@@ -19,7 +20,7 @@ import { remainingToday, recordSpend } from './shopState.js';
 import { resolvePlayer } from './middleware.js';
 import { DEV_AUTH_ALLOWED } from '../auth/telegram.js';
 import {
-  getHolding,
+  getHolding, getPlayer,
   getQuestProgress, reservedStakedAmount,
   createStakingPosition, getPositionById, requestUnstakePosition, deleteStakingPosition,
   withdrawStakingPosition, claimFlexibleCoinRewards, isPositionReserved,
@@ -76,25 +77,22 @@ export function createRouter(state: EngineState) {
   });
 
   router.post('/trade/quote', async (req, res) => {
-    const { coinId, side, amountUsdd, amountCoin } = req.body;
+    const { coinId, side, amountUsdd, amountCoin, useMax } = req.body;
     const cs = state.coins[coinId];
     if (!cs) return res.status(404).json({ error: 'coin not found' });
+    if (useMax !== undefined && typeof useMax !== 'boolean') return res.status(400).json({ error: 'invalid amount' });
     if (amountUsdd !== undefined && !isFinitePositiveAmount(amountUsdd)) return res.status(400).json({ error: 'invalid amount' });
     if (amountCoin !== undefined && !isFinitePositiveAmount(amountCoin)) return res.status(400).json({ error: 'invalid amount' });
     if (side === 'buy') {
-      if (amountUsdd === undefined) return res.status(400).json({ error: 'invalid amount' });
-      if (amountUsdd < MIN_TRADE_USDD) {
-        return res.status(400).json({ error: `minimum trade size is ${MIN_TRADE_USDD} USDD` });
-      }
       try {
+        const budget = useMax ? (await getPlayer(req.playerId)).usdd_balance : amountUsdd;
+        if (typeof budget !== 'number' || !Number.isFinite(budget)) return res.status(400).json({ error: 'invalid amount' });
+        if (budget < MIN_TRADE_USDD) return res.status(400).json({ error: `minimum trade size is ${MIN_TRADE_USDD} USDD` });
         const feePct = tradeFeePct(coinId);
-        const requestedFee = amountUsdd * feePct;
-        const q = quoteBuyExecution(cs.pool, amountUsdd - requestedFee);
-        const executedFraction = q.requestedInput > 0 ? q.executedInput / q.requestedInput : 1;
-        const feeAmount = requestedFee * executedFraction;
-        const executedUsdd = q.executedInput + feeAmount;
+        const q = quoteBuyExecution(cs.pool, budget - budget * feePct);
+        const { fee: feeAmount, totalCharged: executedUsdd } = calculateBuyCharge(budget, feePct, q.executedInput);
         return res.json({
-          requestedAmount: amountUsdd,
+          requestedAmount: budget,
           requestedUnit: 'usdd',
           executedAmount: executedUsdd,
           executedUnit: 'usdd',
