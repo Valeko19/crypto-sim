@@ -223,23 +223,25 @@ export interface QuestProgressRow {
   claimed_at: string | null;
 }
 
-export async function getQuestProgress(playerId: string): Promise<QuestProgressRow[]> {
-  const res = await db.query<QuestProgressRow>('SELECT * FROM quest_progress WHERE player_id = $1', [playerId]);
+export async function getQuestProgress(playerId: string, client: QueryClient = db): Promise<QuestProgressRow[]> {
+  const res = await client.query<QuestProgressRow>('SELECT * FROM quest_progress WHERE player_id = $1', [playerId]);
   return res.rows;
 }
 
 export async function claimQuestRow(
+  client: QueryClient,
   playerId: string,
   questType: string,
-  coinId: string,
   threshold: number
 ): Promise<void> {
-  await db.query(
+  // Call only after locking the player and checking eligibility in the same
+  // transaction. A reward's identity never depends on the qualifying coin.
+  await client.query(
     `INSERT INTO quest_progress (player_id, quest_type, coin_id, threshold, claimed_at)
-     VALUES ($1, $2, $3, $4, now())
+     VALUES ($1, $2, 'none', $3, clock_timestamp())
      ON CONFLICT (player_id, quest_type, coin_id, threshold)
-     DO UPDATE SET claimed_at = now()`,
-    [playerId, questType, coinId, threshold]
+     DO UPDATE SET claimed_at = clock_timestamp()`,
+    [playerId, questType, threshold]
   );
 }
 
@@ -259,9 +261,9 @@ const EARNED_TOTAL_UPSERT: Record<EarnedCategory, string> = {
          ON CONFLICT (player_id) DO UPDATE SET rank_earned_total = player_earned_totals.rank_earned_total + $2`,
 };
 
-export async function addEarnedTotal(playerId: string, category: EarnedCategory, amount: number): Promise<void> {
+export async function addEarnedTotal(playerId: string, category: EarnedCategory, amount: number, client: QueryClient = db): Promise<void> {
   if (amount <= 0) return;
-  await db.query(EARNED_TOTAL_UPSERT[category], [playerId, amount]);
+  await client.query(EARNED_TOTAL_UPSERT[category], [playerId, amount]);
 }
 
 export interface EarnedTotals {
@@ -583,8 +585,8 @@ export async function getAllHighestLeagueIndexes(): Promise<Map<string, number>>
   return new Map(res.rows.map(r => [r.player_id, r.highest_league_index]));
 }
 
-export async function getHighestLeagueIndex(playerId: string): Promise<number> {
-  const res = await db.query<{ highest_league_index: number }>(
+export async function getHighestLeagueIndex(playerId: string, client: QueryClient = db): Promise<number> {
+  const res = await client.query<{ highest_league_index: number }>(
     'SELECT highest_league_index FROM player_rank_progress WHERE player_id = $1',
     [playerId]
   );

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { EngineState, recentChangePct } from '../engine/state.js';
 import { quoteBuyExecution, quoteSellExecution, isFinitePositiveAmount, price } from '../engine/amm.js';
 import { executeTrade, TradeError } from '../engine/trade.js';
+import { claimQuest, QuestClaimError } from '../engine/quests.js';
 import { forcePhase, fearGreedLabel, phaseProgress, tick } from '../engine/tick.js';
 import { justifiedPrice } from '../engine/gravity.js';
 import { aggregateCandles, isChartTimeframe } from '../engine/candleAggregate.js';
@@ -19,11 +20,11 @@ import { resolvePlayer } from './middleware.js';
 import { DEV_AUTH_ALLOWED } from '../auth/telegram.js';
 import {
   getHolding,
-  getQuestProgress, claimQuestRow, reservedStakedAmount,
+  getQuestProgress, reservedStakedAmount,
   createStakingPosition, getPositionById, requestUnstakePosition, deleteStakingPosition,
   withdrawStakingPosition, claimFlexibleCoinRewards, isPositionReserved,
   getTradingBot, configureTradingBot, setTradingBotEnabled, getHighestLeagueIndex,
-  addEarnedTotal, getEarnedTotals,
+  getEarnedTotals,
 } from '../db/queries.js';
 import { computePortfolio, computeLeaderboard, findEmissionLeader, computeStaking } from './helpers.js';
 import { STAKING_FLEXIBLE_COOLDOWN_MS, STAKING_FLEXIBLE_APR } from '../config/staking.js';
@@ -343,93 +344,13 @@ export function createRouter(state: EngineState) {
   });
 
   router.post('/quests/claim', async (req, res) => {
-    const { questId } = req.body as { questId: string };
-
-    if (questId === 'daily_bonus') {
-      const progress = await getQuestProgress(req.playerId);
-      const dailyRow = progress.find(p => p.quest_type === 'daily_bonus');
-      const lastClaim = dailyRow?.claimed_at ? new Date(dailyRow.claimed_at).getTime() : 0;
-      if (Date.now() - lastClaim < 24 * 60 * 60 * 1000) {
-        return res.status(400).json({ error: 'already claimed' });
-      }
-      await claimQuestRow(req.playerId, 'daily_bonus', 'none', 0);
-      const { db } = await import('../db/index.js');
-      await db.query('UPDATE players SET usdd_balance = usdd_balance + $1 WHERE id = $2', [DAILY_BONUS_AMOUNT, req.playerId]);
-      await addEarnedTotal(req.playerId, 'daily', DAILY_BONUS_AMOUNT);
-      return res.json({ success: true, amount: DAILY_BONUS_AMOUNT });
+    try {
+      const amount = await claimQuest(req.playerId, req.body?.questId);
+      return res.json({ success: true, amount });
+    } catch (error) {
+      if (error instanceof QuestClaimError) return res.status(400).json({ error: error.message });
+      return res.status(500).json({ error: 'quest claim failed' });
     }
-
-    if (questId === 'daily_volume') {
-      const progress = await getQuestProgress(req.playerId);
-      const volumeRow = progress.find(p => p.quest_type === 'daily_volume');
-      const lastClaim = volumeRow?.claimed_at ? new Date(volumeRow.claimed_at).getTime() : 0;
-      if (Date.now() - lastClaim < 24 * 60 * 60 * 1000) {
-        return res.status(400).json({ error: 'already claimed' });
-      }
-      if (todaysVolume(req.playerId) < DAILY_VOLUME_THRESHOLD) {
-        return res.status(400).json({ error: 'insufficient volume' });
-      }
-      await claimQuestRow(req.playerId, 'daily_volume', 'none', 0);
-      const { db } = await import('../db/index.js');
-      await db.query('UPDATE players SET usdd_balance = usdd_balance + $1 WHERE id = $2', [DAILY_VOLUME_REWARD, req.playerId]);
-      await addEarnedTotal(req.playerId, 'daily', DAILY_VOLUME_REWARD);
-      return res.json({ success: true, amount: DAILY_VOLUME_REWARD });
-    }
-
-    if (questId.startsWith('emission_capture:')) {
-      const [, coinId, thresholdStr] = questId.split(':');
-      const threshold = Number(thresholdStr);
-      const def = EMISSION_THRESHOLDS.find(t => t.threshold === threshold);
-      if (!def) return res.status(400).json({ error: 'invalid threshold' });
-
-      const portfolio = await computePortfolio(state, req.playerId);
-      const holding = portfolio.holdings.find(h => h.coinId === coinId);
-      if (!holding || holding.pctEmission < threshold) {
-        return res.status(400).json({ error: 'insufficient emission share' });
-      }
-      // Claimed is tracked per (player, threshold) only — a threshold already
-      // paid out on a different coin must not be payable again here.
-      const progress = await getQuestProgress(req.playerId);
-      const already = progress.some(
-        p => p.quest_type === 'emission_capture' && p.threshold === threshold && p.claimed_at
-      );
-      if (already) return res.status(400).json({ error: 'already claimed' });
-
-      await claimQuestRow(req.playerId, 'emission_capture', coinId, threshold);
-      const { db } = await import('../db/index.js');
-      await db.query('UPDATE players SET usdd_balance = usdd_balance + $1 WHERE id = $2', [def.reward, req.playerId]);
-      await addEarnedTotal(req.playerId, 'emission', def.reward);
-      return res.json({ success: true, amount: def.reward });
-    }
-
-    if (questId.startsWith('rank_reward:')) {
-      const [, rankIndexStr] = questId.split(':');
-      const rankIndex = Number(rankIndexStr);
-      const reward = RANK_UP_REWARDS[rankIndex] ?? 0;
-      if (!Number.isInteger(rankIndex) || rankIndex <= 0 || rankIndex >= RANKS.length || reward <= 0) {
-        return res.status(400).json({ error: 'invalid rank' });
-      }
-
-      // achieved = peak ever reached (see rankRewards.ts) — never the live
-      // rank, so this can't be gamed by dipping back below the threshold.
-      const highestLeagueIndex = await getHighestLeagueIndex(req.playerId);
-      if (highestLeagueIndex < rankIndex) {
-        return res.status(400).json({ error: 'rank not yet achieved' });
-      }
-      const progress = await getQuestProgress(req.playerId);
-      const already = progress.some(
-        p => p.quest_type === 'rank_reward' && p.threshold === rankIndex && p.claimed_at
-      );
-      if (already) return res.status(400).json({ error: 'already claimed' });
-
-      await claimQuestRow(req.playerId, 'rank_reward', 'none', rankIndex);
-      const { db } = await import('../db/index.js');
-      await db.query('UPDATE players SET usdd_balance = usdd_balance + $1 WHERE id = $2', [reward, req.playerId]);
-      await addEarnedTotal(req.playerId, 'rank', reward);
-      return res.json({ success: true, amount: reward });
-    }
-
-    return res.status(400).json({ error: 'unknown quest' });
   });
 
   router.get('/shop/status', (req, res) => {

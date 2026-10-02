@@ -10,7 +10,8 @@
     "test:beta": "tsx scripts/tests/index.ts",
     "test:numeric": "tsx scripts/tests/numericValidationTests.ts",
     "test:atomic": "tsx scripts/tests/atomicTradeTests.ts",
-    "test:auth": "tsx scripts/tests/authSessionTests.ts"
+    "test:auth": "tsx scripts/tests/authSessionTests.ts",
+    "test:quests": "tsx scripts/tests/questRewardTests.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.2.17",
