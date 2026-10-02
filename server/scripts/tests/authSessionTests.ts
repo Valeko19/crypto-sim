@@ -6,6 +6,7 @@ import path from 'node:path';
 import { createServer, type Server } from 'node:http';
 import express from 'express';
 import { WebSocket } from 'ws';
+import { runAuthRegressions } from './authRegressions.js';
 
 const originalPgDataDir = process.env.PGDATA_DIR;
 const originalNodeEnv = process.env.NODE_ENV;
@@ -183,6 +184,7 @@ async function main(): Promise<void> {
     }
   });
 
+  await runAuthRegressions({ db, wsServer, run, signInitData });
   console.log(`AUTH SESSION TESTS: ${results.length} passed`);
 }
 
@@ -192,6 +194,7 @@ try {
   console.error('AUTH SESSION TEST FAILURE', error);
   process.exitCode = 1;
 } finally {
+  for (const socket of wsServer?.wss.clients ?? []) socket.terminate();
   if (server?.listening) await new Promise<void>(resolve => server!.close(() => resolve()));
   await db.close();
   if (originalPgDataDir === undefined) delete process.env.PGDATA_DIR;

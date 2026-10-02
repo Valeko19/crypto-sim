@@ -33,11 +33,26 @@ export function createWsServer(httpServer: Server) {
 
   // A player might have multiple tabs/devices open — send to every matching
   // connected socket, not just one.
-  function sendToPlayer(playerId: string, type: string, payload: unknown) {
+  async function sendToPlayer(playerId: string, type: string, payload: unknown) {
     const message = JSON.stringify({ type, payload });
-    for (const client of wss.clients) {
-      if (client.readyState === WebSocket.OPEN && client.playerId === playerId) client.send(message);
-    }
+    await Promise.all([...wss.clients].map(async client => {
+      if (client.readyState !== WebSocket.OPEN || client.playerId !== playerId) return;
+      // Outbound updates are not player activity and must not slide idle expiry.
+      const token = client.sessionToken;
+      const valid = !token || await isAuthSessionValid(token).catch(() => false);
+      if (client.readyState !== WebSocket.OPEN || client.playerId !== playerId || client.sessionToken !== token) return;
+      if (!valid) {
+        rejectSession(client);
+        return;
+      }
+      client.send(message);
+    }));
+  }
+
+  function rejectSession(ws: WebSocket) {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: 'auth_error', payload: { error: 'unauthorized' } }));
+    ws.close();
   }
 
   function getConnectedPlayerIds(): Set<string> {
@@ -47,6 +62,8 @@ export function createWsServer(httpServer: Server) {
   }
 
   wss.on('connection', ws => {
+    let authInProgress = false;
+    let closed = false;
     const timeout = setTimeout(() => {
       if (!ws.playerId) ws.close();
     }, AUTH_TIMEOUT_MS);
@@ -55,46 +72,46 @@ export function createWsServer(httpServer: Server) {
 
     ws.on('message', async raw => {
       try {
+        if (closed || ws.readyState !== WebSocket.OPEN) return;
         const msg = JSON.parse(raw.toString());
         if (ws.playerId) {
           if (msg.type === 'activity' && ws.sessionToken) {
             const identity = await resolveAuthSession(ws.sessionToken).catch(() => null);
-            if (!identity) {
-              ws.send(JSON.stringify({ type: 'auth_error', payload: { error: 'unauthorized' } }));
-              ws.close();
-            }
+            if (!identity) rejectSession(ws);
           }
           return;
         }
-        if (msg.type !== 'auth') return;
+        if (msg.type !== 'auth' || authInProgress) return;
+        // EventEmitter does not serialize async listeners: lock before any await.
+        authInProgress = true;
         const sessionToken = typeof msg.sessionToken === 'string' ? msg.sessionToken : undefined;
         const identity = sessionToken
           ? await resolveAuthSession(sessionToken)
           : resolveIdentity(undefined, msg.devPlayerId);
+        if (closed || ws.readyState !== WebSocket.OPEN) return;
         if (!identity) {
-          ws.send(JSON.stringify({ type: 'auth_error', payload: { error: 'unauthorized' } }));
-          return ws.close();
+          rejectSession(ws);
+          return;
         }
 
         // Same beta-gate as the REST middleware — applied here too so it
         // can't be bypassed by connecting straight over WS instead of REST.
         const existing = await getPlayer(identity.playerId);
+        if (closed || ws.readyState !== WebSocket.OPEN) return;
         if (!existing && !isBetaAllowed(identity)) {
           ws.send(JSON.stringify({ type: 'auth_error', payload: { error: BETA_DENIED_MESSAGE } }));
           return ws.close();
         }
 
         await ensurePlayer(identity.playerId, identity.username);
+        if (closed || ws.readyState !== WebSocket.OPEN) return;
         ws.playerId = identity.playerId;
         if (sessionToken) {
           ws.sessionToken = sessionToken;
           ws.sessionRecheck = setInterval(async () => {
             if (ws.readyState !== WebSocket.OPEN || !ws.sessionToken) return;
             const isValid = await isAuthSessionValid(ws.sessionToken).catch(() => false);
-            if (!isValid) {
-              ws.send(JSON.stringify({ type: 'auth_error', payload: { error: 'unauthorized' } }));
-              ws.close();
-            }
+            if (!isValid) rejectSession(ws);
           }, SESSION_RECHECK_MS);
         }
         clearTimeout(timeout);
@@ -104,8 +121,10 @@ export function createWsServer(httpServer: Server) {
     });
 
     ws.on('close', () => {
+      closed = true;
       clearTimeout(timeout);
       if (ws.sessionRecheck) clearInterval(ws.sessionRecheck);
+      ws.sessionRecheck = undefined;
     });
   });
 
