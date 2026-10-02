@@ -15,6 +15,28 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* One press effect for game buttons; interrupted taps reverse smoothly. */
+button {
+  transform: scale(1);
+  transition: transform 120ms ease-out;
+}
+
+/* Keep Tailwind's existing color transitions without dropping the press transition. */
+button.transition-colors {
+  transition:
+    color 150ms cubic-bezier(0.4, 0, 0.2, 1),
+    background-color 150ms cubic-bezier(0.4, 0, 0.2, 1),
+    border-color 150ms cubic-bezier(0.4, 0, 0.2, 1),
+    text-decoration-color 150ms cubic-bezier(0.4, 0, 0.2, 1),
+    fill 150ms cubic-bezier(0.4, 0, 0.2, 1),
+    stroke 150ms cubic-bezier(0.4, 0, 0.2, 1),
+    transform 120ms ease-out;
+}
+
+button:enabled:not([aria-disabled="true"]):not([aria-busy="true"]):active {
+  transform: scale(0.98);
+}
+
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
