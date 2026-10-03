@@ -1,3 +1,4 @@
+import { useAccountGuard } from '../hooks/useAccountGuard';
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { createChart, ColorType, CandlestickSeriesPartialOptions, IChartApi, ISeriesApi } from 'lightweight-charts';
@@ -47,6 +48,7 @@ const CHART_TIMEFRAMES: { id: ChartTimeframe; label: string }[] = [
 ];
 
 export function CoinDetailScreen() {
+  const accountCurrent = useAccountGuard();
   const { coinId = '' } = useParams();
   const navigate = useNavigate();
   const live = useMarketSocket();
@@ -404,6 +406,8 @@ export function CoinDetailScreen() {
   const botActiveHere = !!(botStatus?.config?.coinId === coinId && botStatus.config.enabled);
   const botContentOpen = botActiveHere || botExpanded;
   const botAvailable = botSide === 'buy' ? balance : (holding?.amount ?? 0);
+
+  if (!accountCurrent) return <div className="p-4 text-muted">Авторизация…</div>;
 
   return (
     <div className="px-4 pt-4">

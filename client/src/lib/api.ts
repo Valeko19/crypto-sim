@@ -1,4 +1,4 @@
-import { getIdentityHeaders, refreshIdentityHeaders } from './telegram';
+import { getIdentityHeaders, refreshIdentityHeaders, captureAuthContext, assertAuthContext, authRequest } from './telegram';
 
 export interface CoinListItem {
   id: string;
@@ -123,24 +123,34 @@ export interface StakingCoinView {
 export const API_BASE = import.meta.env.VITE_API_BASE ?? '';
 
 async function req<T>(path: string, options?: RequestInit): Promise<T> {
-  const identityHeaders = await getIdentityHeaders();
-  const url = `${API_BASE}/api${path}`;
-  const requestOptions: RequestInit = {
-    ...options,
-    headers: { 'Content-Type': 'application/json', ...identityHeaders, ...options?.headers },
-  };
-  let res = await fetch(url, requestOptions);
-  const sessionToken = identityHeaders['X-Session-Token'];
-  if (res.status === 401 && sessionToken) {
-    const refreshedHeaders = await refreshIdentityHeaders(sessionToken);
-    requestOptions.headers = { 'Content-Type': 'application/json', ...refreshedHeaders, ...options?.headers };
-    res = await fetch(url, requestOptions);
-  }
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error ?? `Request failed: ${path}`);
-  }
-  return res.json();
+  const context = captureAuthContext();
+  const identityHeaders = await getIdentityHeaders(context);
+  const request = authRequest(context);
+  try {
+    const url = `${API_BASE}/api${path}`;
+    const requestOptions: RequestInit = {
+      ...options,
+      signal: request.signal,
+      headers: { 'Content-Type': 'application/json', ...identityHeaders, ...options?.headers },
+    };
+    let res = await fetch(url, requestOptions);
+    assertAuthContext(context);
+    const sessionToken = identityHeaders['X-Session-Token'];
+    if (res.status === 401 && sessionToken) {
+      const refreshedHeaders = await refreshIdentityHeaders(sessionToken, context);
+      requestOptions.headers = { 'Content-Type': 'application/json', ...refreshedHeaders, ...options?.headers };
+      res = await fetch(url, requestOptions);
+      assertAuthContext(context);
+    }
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      assertAuthContext(context);
+      throw new Error(body.error ?? `Request failed: ${path}`);
+    }
+    const body = await res.json();
+    assertAuthContext(context);
+    return body;
+  } finally { request.release(); }
 }
 
 export const api = {

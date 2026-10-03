@@ -1,3 +1,4 @@
+import { useAccountGuard } from '../hooks/useAccountGuard';
 import { useEffect, useState } from 'react';
 import { api, StakingCoinView } from '../lib/api';
 import { CoinAvatar } from '../components/CoinAvatar';
@@ -8,6 +9,7 @@ interface FormState { amount: string; }
 interface StakingConfig { flexibleAprPct: number; flexibleCooldownMs: number; }
 
 export function FarmingScreen() {
+  const accountCurrent = useAccountGuard();
   const [coins, setCoins] = useState<StakingCoinView[] | null>(null);
   const [config, setConfig] = useState<StakingConfig | null>(null);
   const [forms, setForms] = useState<Record<string, FormState>>({});
@@ -61,6 +63,8 @@ export function FarmingScreen() {
       updateForm(coinId, { amount: '' });
     });
   }
+
+  if (!accountCurrent) return <div className="p-4 text-muted">Авторизация…</div>;
 
   if (!coins || !config) return <div className="p-4 text-muted">Загрузка…</div>;
 

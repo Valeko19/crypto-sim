@@ -1,5 +1,5 @@
 import { MarketStatus, PortfolioView, Candle, API_BASE } from './api';
-import { clearSessionToken, getIdentityForWs } from './telegram';
+import { clearSessionToken, getIdentityForWs, captureAuthContext, isAuthContextCurrent, subscribeAuth, type AuthContext } from './telegram';
 
 export interface LivePriceInfo { price: number; changePct: number; }
 
@@ -16,20 +16,50 @@ interface WsState {
 let state: WsState = { prices: {}, marketStatus: null, portfolio: null, candles: {} };
 const listeners = new Set<() => void>();
 const SESSION_ACTIVITY_INTERVAL_MS = 5 * 60 * 1000;
+let activeSocket: WebSocket | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let activityTimer: ReturnType<typeof setInterval> | null = null;
+let started = false;
+
+function stopConnection() {
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  if (activityTimer) clearInterval(activityTimer);
+  reconnectTimer = activityTimer = null;
+  const old = activeSocket;
+  activeSocket = null;
+  old?.close();
+}
+function reconnect(context: AuthContext, delay: number) {
+  if (!isAuthContextCurrent(context) || !context.identity) return;
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    if (isAuthContextCurrent(context)) void connect();
+  }, delay);
+}
+subscribeAuth(() => {
+  stopConnection();
+  state = { ...state, portfolio: null };
+  emit();
+  if (started) void connect();
+});
 
 function emit() {
   for (const l of listeners) l();
 }
 
 async function connect() {
+  const context = captureAuthContext();
+  if (!context.identity) return;
   let identity: Awaited<ReturnType<typeof getIdentityForWs>>;
   try {
-    identity = await getIdentityForWs();
+    identity = await getIdentityForWs(context);
   } catch (error) {
     if (error instanceof Error && error.message.includes('authorization expired')) return;
-    setTimeout(() => { void connect(); }, 5000);
+    reconnect(context, 5000);
     return;
   }
+  if (!isAuthContextCurrent(context) || activeSocket) return;
 
   // Same-origin by default (dev proxy handles /ws — see vite.config.ts); a
   // split-domain deploy sets VITE_API_BASE to the server's http(s) URL, which
@@ -38,21 +68,24 @@ async function connect() {
     ? `${API_BASE.replace(/^http/, 'ws')}/ws`
     : `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`;
   const ws = new WebSocket(wsUrl);
-  let activityTimer: ReturnType<typeof setInterval> | null = null;
+  activeSocket = ws;
+  const current = () => isAuthContextCurrent(context) && activeSocket === ws;
 
   // Identity is sent as the first message after open, not a query param on
   // wsUrl — the browser WebSocket API can't set custom headers, and a query
   // string would land in default access logs (unlike the REST header path).
   ws.onopen = () => {
+    if (!current()) { ws.close(); return; }
     ws.send(JSON.stringify({ type: 'auth', ...identity }));
     if ('sessionToken' in identity) {
       activityTimer = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'activity' }));
+        if (current() && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'activity' }));
       }, SESSION_ACTIVITY_INTERVAL_MS);
     }
   };
 
   ws.onmessage = ev => {
+    if (!current()) return;
     try {
       const { type, payload } = JSON.parse(ev.data);
       if (type === 'auth_error') {
@@ -79,12 +112,14 @@ async function connect() {
   };
 
   ws.onclose = () => {
+    if (!current()) return;
     if (activityTimer) clearInterval(activityTimer);
-    setTimeout(() => { void connect(); }, 1500);
+    activityTimer = null;
+    activeSocket = null;
+    reconnect(context, 1500);
   };
 }
 
-let started = false;
 export function ensureWsStarted() {
   if (started) return;
   started = true;
@@ -97,5 +132,8 @@ export function subscribe(listener: () => void): () => void {
 }
 
 export function getSnapshot(): WsState {
+  // This synchronously clears personal state and invalidates the old socket on
+  // an identity change; polling is only a proactive notification mechanism.
+  captureAuthContext();
   return state;
 }

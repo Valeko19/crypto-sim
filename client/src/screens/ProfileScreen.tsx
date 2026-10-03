@@ -1,3 +1,4 @@
+import { useAccountGuard } from '../hooks/useAccountGuard';
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, PortfolioView } from '../lib/api';
@@ -9,6 +10,7 @@ import { RankBadge } from '../components/RankBadge';
 import { ShareIcon, ChevronIcon } from '../components/icons';
 
 export function ProfileScreen() {
+  const accountCurrent = useAccountGuard();
   const [portfolio, setPortfolio] = useState<PortfolioView | null>(null);
   const [leaguePlace, setLeaguePlace] = useState<number | null>(null);
   const live = useMarketSocket();
@@ -37,6 +39,8 @@ export function ProfileScreen() {
       setLeaguePlace(me?.place ?? null);
     });
   }, [current?.league]);
+
+  if (!accountCurrent) return <div className="p-4 text-muted">Авторизация…</div>;
 
   if (!current) return <div className="p-4 text-muted">Загрузка…</div>;
 

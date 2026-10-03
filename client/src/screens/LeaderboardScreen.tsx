@@ -1,9 +1,11 @@
+import { useAccountGuard } from '../hooks/useAccountGuard';
 import { useEffect, useState } from 'react';
 import { api, LeaderboardView, RankInfo } from '../lib/api';
 import { formatCompact, formatUsdd } from '../lib/format';
 import { rankEmoji } from '../lib/rankVisuals';
 
 export function LeaderboardScreen() {
+  const accountCurrent = useAccountGuard();
   const [ranks, setRanks] = useState<RankInfo[] | null>(null);
   const [league, setLeague] = useState<string | null>(null);
   const [board, setBoard] = useState<LeaderboardView | null>(null);
@@ -17,6 +19,8 @@ export function LeaderboardScreen() {
     if (!league) return;
     api.getLeaderboard(league).then(setBoard);
   }, [league]);
+
+  if (!accountCurrent) return <div className="p-4 text-muted">Авторизация…</div>;
 
   if (!ranks || !league) return <div className="p-4 text-muted">Загрузка…</div>;
 

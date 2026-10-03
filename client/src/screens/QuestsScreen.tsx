@@ -1,3 +1,4 @@
+import { useAccountGuard } from '../hooks/useAccountGuard';
 import { useEffect, useState } from 'react';
 import { api, QuestsView } from '../lib/api';
 import { GiftIcon, CheckIcon, TradeIcon } from '../components/icons';
@@ -5,6 +6,7 @@ import { formatUsdd } from '../lib/format';
 import { rankEmoji } from '../lib/rankVisuals';
 
 export function QuestsScreen() {
+  const accountCurrent = useAccountGuard();
   const [quests, setQuests] = useState<QuestsView | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
@@ -24,6 +26,8 @@ export function QuestsScreen() {
       setBusyId(null);
     }
   }
+
+  if (!accountCurrent) return <div className="p-4 text-muted">Авторизация…</div>;
 
   if (!quests) return <div className="p-4 text-muted">Загрузка…</div>;
 

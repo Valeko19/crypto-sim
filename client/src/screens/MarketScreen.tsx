@@ -1,3 +1,4 @@
+import { useAccountGuard } from '../hooks/useAccountGuard';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, CoinListItem, MarketStatus } from '../lib/api';
@@ -8,6 +9,7 @@ import { FearGreedBar } from '../components/FearGreedBar';
 import { formatCompact, formatPrice, formatPct, pctColorClass, formatDurationShort } from '../lib/format';
 
 export function MarketScreen() {
+  const accountCurrent = useAccountGuard();
   const [coins, setCoins] = useState<CoinListItem[] | null>(null);
   const [marketStatus, setMarketStatus] = useState<MarketStatus | null>(null);
   const live = useMarketSocket();
@@ -47,6 +49,8 @@ export function MarketScreen() {
       return capB - capA;
     });
   }, [coins, capPrices]);
+
+  if (!accountCurrent) return <div className="p-4 text-muted">Авторизация…</div>;
 
   if (!coins || !rankedCoins) {
     return <div className="p-4 text-muted">Загрузка рынка…</div>;

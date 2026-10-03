@@ -11,6 +11,7 @@
     "test:numeric": "tsx scripts/tests/numericValidationTests.ts",
     "test:atomic": "tsx scripts/tests/atomicTradeTests.ts",
     "test:auth": "tsx scripts/tests/authSessionTests.ts",
+    "test:accounts": "tsx scripts/tests/accountIsolationTests.ts",
     "test:quests": "tsx scripts/tests/questRewardTests.ts",
     "test:max-buy": "tsx scripts/tests/maxBuyTests.ts",
     "test:supply": "tsx scripts/tests/supplyTests.ts"

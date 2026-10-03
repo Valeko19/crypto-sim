@@ -1,3 +1,4 @@
+import { useAccountGuard } from '../hooks/useAccountGuard';
 import { useEffect, useState } from 'react';
 import { api, ShopStatus, TradingBotStatus } from '../lib/api';
 import { formatUsdd } from '../lib/format';
@@ -5,6 +6,7 @@ import { formatUsdd } from '../lib/format';
 const DAILY_CLAIM_USDD = 100_000;
 
 export function ShopScreen() {
+  const accountCurrent = useAccountGuard();
   const [status, setStatus] = useState<ShopStatus | null>(null);
   const [botStatus, setBotStatus] = useState<TradingBotStatus | null>(null);
   const [busy, setBusy] = useState(false);
@@ -34,6 +36,8 @@ export function ShopScreen() {
       setBusy(false);
     }
   }
+
+  if (!accountCurrent) return <div className="p-4 text-muted">Авторизация…</div>;
 
   if (!status) return <div className="p-4 text-muted">Загрузка…</div>;
 
