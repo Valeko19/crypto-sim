@@ -68,6 +68,7 @@ export async function initDb() {
       coin_reserve DOUBLE PRECISION NOT NULL,
       usdd_reserve DOUBLE PRECISION NOT NULL
     );
+    ALTER TABLE coin_pools ADD COLUMN IF NOT EXISTS reference_price DOUBLE PRECISION;
 
     CREATE TABLE IF NOT EXISTS trade_requests (
       player_id TEXT NOT NULL REFERENCES players(id),

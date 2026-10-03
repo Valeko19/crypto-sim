@@ -28,6 +28,7 @@ async function run(name: string, test: () => Promise<void>) {
 }
 
 async function fixture(balance: number, coinId = 'btcr', capped = false) {
+  await db.query('DELETE FROM player_holdings');
   Object.assign(state, createInitialState());
   if (capped) state.coins[coinId].pool = { coinReserve: 1000, usddReserve: 1 };
   const id = `tg_max_buy_${++sequence}`;

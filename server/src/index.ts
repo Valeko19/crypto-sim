@@ -4,7 +4,7 @@ import http from 'node:http';
 import { createInitialState, recentChangePct, Candle } from './engine/state.js';
 import { startEngineLoop, fearGreedLabel, phaseProgress } from './engine/tick.js';
 import { MACRO_CONFIG } from './engine/macroCycle.js';
-import { price, maxTradeableReserve } from './engine/amm.js';
+import { price, limitPoolSupply } from './engine/amm.js';
 import { COINS } from './config/coins.js';
 import { initDb } from './db/index.js';
 import { getAllPoolSnapshots, getTotalHeldForCoin, pruneOldTradeLogEntries } from './db/queries.js';
@@ -34,7 +34,10 @@ async function main() {
   const snapshots = await getAllPoolSnapshots();
   for (const snap of snapshots) {
     const cs = state.coins[snap.coin_id];
-    if (cs) cs.pool = { coinReserve: snap.coin_reserve, usddReserve: snap.usdd_reserve };
+    if (cs) cs.pool = {
+      coinReserve: snap.coin_reserve, usddReserve: snap.usdd_reserve,
+      ...(snap.reference_price != null ? { referencePrice: snap.reference_price } : {}),
+    };
   }
 
   // Safety net, independent of whether a snapshot existed: the pool must never
@@ -46,12 +49,7 @@ async function main() {
     const cs = state.coins[cfg.id];
     const reachable = cfg.emission * (1 - cfg.npcLockedPct);
     const totalHeld = await getTotalHeldForCoin(cfg.id);
-    const maxAllowedReserve = maxTradeableReserve(reachable, totalHeld);
-    if (cs.pool.coinReserve > maxAllowedReserve) {
-      const currentPrice = price(cs.pool);
-      cs.pool.coinReserve = maxAllowedReserve;
-      cs.pool.usddReserve = maxAllowedReserve * currentPrice;
-    }
+    limitPoolSupply(cs.pool, reachable, totalHeld, cfg.startPrice);
     // Seeds the long-horizon gravity anchor's "real participation" metric (see
     // gravity.ts) from the same real-holdings total used above, so background
     // drift never gets credited for price support that only real trades earned.

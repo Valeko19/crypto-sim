@@ -508,6 +508,7 @@ export function tick(state: EngineState) {
 
   for (const cs of Object.values(state.coins)) {
     const cfg = cs.config;
+    if (cs.pool.coinReserve === 0 && !cs.pool.referencePrice) cs.pool.referencePrice = cfg.startPrice;
     updateLocalCycle(cs, state);
 
     let macroDriftContribution: number;
@@ -600,15 +601,14 @@ export function tick(state: EngineState) {
     const currentPrice = price(cs.pool);
     const targetPrice = Math.max(currentPrice * (1 + totalPct / 100), currentPrice * 1e-6);
     // The cap must shrink as real trades sell coins to players — cs.playerOwnedCoins
-    // already tracks that running total (see trade.ts). Using the STATIC free float
+    // caches a conservative sum of committed DB holdings (see trade.ts), never
+    // an independently accumulated counter. Using the STATIC free float
     // here let a falling price re-inflate coinReserve back toward the full free
     // float even after coins had already been sold out of the pool permanently,
     // effectively re-issuing supply that was already someone's holdings — measured
     // to push cumulative ownership past 100% of TOTAL emission (not just the free
-    // float) after only a few large-buy/price-drop cycles. maxTradeableReserve
-    // additionally floors this at a small fraction of the free float instead of
-    // letting it hit exactly 0 — see its own comment in amm.ts for why (a bare
-    // Math.max(0, ...) here permanently NaN-locks the pool's price).
+    // float) after only a few large-buy/price-drop cycles. Exhausted pools
+    // retain only a price reference, never a synthetic reserve of coins.
     const maxCoinReserve = maxTradeableReserve(cfg.emission * (1 - cfg.npcLockedPct), cs.playerOwnedCoins);
     repriceTo(cs.pool, targetPrice, maxCoinReserve);
 

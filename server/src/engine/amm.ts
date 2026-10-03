@@ -1,11 +1,16 @@
 // Constant-product AMM pool (x * y = k), same formula used for both real player
 // trades and simulated background "noise" trades so the market feels unified.
+import { remainingSupply } from './supply.js';
+
 export interface Pool {
   coinReserve: number; // x: coins sitting in the pool, available to buy
   usddReserve: number; // y: USDD sitting in the pool
+  // Quote reference for exhausted liquidity, never tradeable inventory.
+  referencePrice?: number;
 }
 
 export function price(pool: Pool): number {
+  if (pool.coinReserve === 0) return pool.referencePrice ?? 0;
   return pool.usddReserve / pool.coinReserve;
 }
 
@@ -141,6 +146,21 @@ function calculateSell(pool: Pool, coinIn: number): {
   liquidityCapApplied: boolean;
 } {
   if (!isFinitePositiveAmount(coinIn)) throw new RangeError('coin input must be a finite positive number');
+  if (pool.coinReserve === 0 && pool.usddReserve === 0) {
+    const reference = price(pool);
+    assertFinitePositiveResult(reference, 'exhausted market price');
+    const gross = coinIn * reference;
+    assertFinitePositiveResult(gross, 'exhausted SELL output');
+    // Exhausted-market transition: the virtual market maker buys real coins
+    // at its reference price and seeds matching USDD liquidity. This is the
+    // explicit USDD source, like ordinary background repricing; no coins are
+    // seeded. A cap relative to the old zero coin inventory cannot apply.
+    return {
+      result: { coinAmount: coinIn, usddAmount: gross, avgPrice: reference,
+        priceBefore: reference, priceAfter: reference, slippagePct: 0 },
+      nextCoinReserve: coinIn, nextUsddReserve: gross, liquidityCapApplied: false,
+    };
+  }
   const { priceBefore, invariant: kk } = assertValidPool(pool);
   const cappedCoinIn = Math.min(coinIn, pool.coinReserve * MAX_RESERVE_FRACTION);
   assertFinitePositiveResult(cappedCoinIn, 'executed coin amount');
@@ -196,7 +216,7 @@ export function sellCoin(pool: Pool, coinIn: number): TradeResult {
 // news/homing) so macro/local cycles can move price through the exact same
 // mechanism as a real trade, without a real trade actually happening.
 //
-// `maxCoinReserve` is the coin's free float (emission * (1 - npcLockedPct)) —
+// `maxCoinReserve` is free float minus coins already held by players —
 // the pool must never claim to hold more of the tradeable supply than
 // actually exists. A FALLING price's constant-product solution
 // (sqrt(k/targetPrice)) grows coinReserve without bound, which let it exceed
@@ -207,35 +227,52 @@ export function sellCoin(pool: Pool, coinIn: number): TradeResult {
 // instead of from k — there's no real trade here whose k needs preserving,
 // so it's fine to break that invariant only in this clamped case.
 export function repriceTo(pool: Pool, targetPrice: number, maxCoinReserve: number): void {
+  if (!isFinitePositiveAmount(targetPrice)) throw new RangeError('invalid target price');
+  if (!Number.isFinite(maxCoinReserve) || maxCoinReserve < 0) throw new RangeError('invalid supply limit');
+  if (maxCoinReserve === 0 || pool.coinReserve === 0 || pool.usddReserve === 0) {
+    pool.coinReserve = 0;
+    pool.usddReserve = 0;
+    pool.referencePrice = targetPrice;
+    return;
+  }
   const kk = k(pool);
   let newCoinReserve = Math.sqrt(kk / targetPrice);
   let newUsddReserve = Math.sqrt(kk * targetPrice);
+  // Preserve ordinary-market rounding, but avoid intermediate k underflow.
+  if (!isFinitePositiveAmount(newCoinReserve) || !isFinitePositiveAmount(newUsddReserve)) {
+    const rootK = Math.sqrt(pool.coinReserve) * Math.sqrt(pool.usddReserve);
+    newCoinReserve = rootK / Math.sqrt(targetPrice);
+    newUsddReserve = rootK * Math.sqrt(targetPrice);
+  }
   if (newCoinReserve > maxCoinReserve) {
     newCoinReserve = maxCoinReserve;
     newUsddReserve = targetPrice * maxCoinReserve;
+  }
+  if (!isFinitePositiveAmount(newCoinReserve) || !isFinitePositiveAmount(newUsddReserve)) {
+    // Liquidity below representable precision cannot be traded or fabricated.
+    pool.coinReserve = 0;
+    pool.usddReserve = 0;
+    pool.referencePrice = targetPrice;
+    return;
   }
   pool.coinReserve = newCoinReserve;
   pool.usddReserve = newUsddReserve;
 }
 
-// Floor on repriceTo's cap, as a fraction of the free float — without this,
-// a coin whose already-sold holdings (alreadyHeld) reach or exceed the free
-// float clamps straight to 0, and since repriceTo sets BOTH coinReserve and
-// usddReserve to that same value when the cap binds, the pool permanently
-// locks at coinReserve=0/usddReserve=0 -> price() = 0/0 = NaN forever (no
-// later tick can ever recover it, since k=0 stays 0). JSON.stringify turns
-// that NaN into null on the wire, which crashed the client's list rendering
-// (formatPct/formatCompact calling .toFixed on a null price/changePct).
-// Confirmed via a diagnostic script: a coin already inflated past its free
-// float by the (now-fixed) unbounded-repriceTo bug hit this exact zero-lock
-// on the very first tick after the fix was deployed.
-const MIN_POOL_RESERVE_FRACTION = 0.0005;
-
-// Shared by tick.ts (repriceTo's per-tick cap) and index.ts (the boot-time
-// snapshot safety net) so both always agree on the same floor — they used to
-// compute this independently and drifted out of sync (see MIN_POOL_RESERVE_FRACTION above).
+// Shared by ticks and boot recovery. Price references cannot re-issue owned coins.
 export function maxTradeableReserve(freeFloat: number, alreadyHeld: number): number {
-  return Math.max(freeFloat - alreadyHeld, freeFloat * MIN_POOL_RESERVE_FRACTION);
+  return remainingSupply(freeFloat, alreadyHeld);
+}
+
+// Also reconcile roundoff after transfers and persisted pools at boot.
+export function limitPoolSupply(pool: Pool, freeFloat: number, alreadyHeld: number, fallbackPrice: number): void {
+  const available = maxTradeableReserve(freeFloat, alreadyHeld);
+  if (pool.coinReserve > available || pool.coinReserve === 0) {
+    const currentPrice = price(pool) || fallbackPrice;
+    pool.coinReserve = Math.min(pool.coinReserve, available);
+    pool.usddReserve = pool.coinReserve * currentPrice;
+    if (pool.coinReserve === 0) pool.referencePrice = currentPrice;
+  }
 }
 
 export function quoteBuy(pool: Pool, usddIn: number): { coinOut: number; avgPrice: number; priceImpactPct: number } {

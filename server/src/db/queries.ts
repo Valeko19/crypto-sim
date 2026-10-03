@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { PGliteInterface } from '@electric-sql/pglite';
 import { db } from './index.js';
+import { holdingsUpperBound } from '../engine/supply.js';
 import { StakingMode, STAKING_FLEXIBLE_APR, STAKING_LOCKED_APR } from '../config/staking.js';
 
 type QueryClient = Pick<PGliteInterface, 'query'>;
@@ -289,6 +290,7 @@ export interface PoolSnapshotRow {
   coin_id: string;
   coin_reserve: number;
   usdd_reserve: number;
+  reference_price: number | null;
 }
 
 export async function getAllPoolSnapshots(): Promise<PoolSnapshotRow[]> {
@@ -300,23 +302,26 @@ export async function savePoolSnapshotWithClient(
   client: QueryClient,
   coinId: string,
   coinReserve: number,
-  usddReserve: number
+  usddReserve: number,
+  referencePrice?: number
 ): Promise<void> {
   await client.query(
-    `INSERT INTO coin_pools (coin_id, coin_reserve, usdd_reserve) VALUES ($1, $2, $3)
-     ON CONFLICT (coin_id) DO UPDATE SET coin_reserve = $2, usdd_reserve = $3`,
-    [coinId, coinReserve, usddReserve]
+    `INSERT INTO coin_pools (coin_id, coin_reserve, usdd_reserve, reference_price) VALUES ($1, $2, $3, $4)
+     ON CONFLICT (coin_id) DO UPDATE SET coin_reserve = $2, usdd_reserve = $3, reference_price = $4`,
+    [coinId, coinReserve, usddReserve, referencePrice ?? null]
   );
 }
 
-// Total held across ALL players for a coin — used to reconcile the pool reserve
-// at boot so it can never re-issue supply that's already owned (see index.ts).
-export async function getTotalHeldForCoin(coinId: string): Promise<number> {
-  const res = await db.query<{ total: number }>(
-    'SELECT COALESCE(SUM(amount), 0)::float as total FROM player_holdings WHERE coin_id = $1',
+// Conservative total across ALL persisted holdings, read at boot and inside
+// each trade transaction. The tick's cached value is published only on commit.
+export async function getTotalHeldForCoin(coinId: string, client: QueryClient = db): Promise<number> {
+  const res = await client.query<{ amount: number }>(
+    'SELECT amount FROM player_holdings WHERE coin_id = $1',
     [coinId]
   );
-  return Number(res.rows[0].total);
+  // SUM(double precision) can itself round down, depending on row order.
+  // Sum the exact persisted doubles, then round only upward for supply limits.
+  return holdingsUpperBound(res.rows.map(row => row.amount));
 }
 
 export async function capHoldingAmount(playerId: string, coinId: string, newAmount: number): Promise<void> {

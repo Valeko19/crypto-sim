@@ -28,7 +28,8 @@ let state = createInitialState();
 let requestNumber = 0;
 let tradeRequestNumber = 0;
 
-function resetState(): void {
+async function resetState(): Promise<void> {
+  await db.query('DELETE FROM player_holdings');
   Object.assign(state, createInitialState());
 }
 
@@ -169,7 +170,7 @@ async function main(): Promise<void> {
 
   await run('BUY REST rejects non-number JSON values without financial side effects', async () => {
     for (const value of invalidHttpValues) {
-      resetState();
+      await resetState();
       const player = playerId();
       await http('GET', player, '/portfolio');
       const before = await snapshot(player);
@@ -189,7 +190,7 @@ async function main(): Promise<void> {
 
   await run('SELL amountCoin REST rejects non-number JSON values without side effects', async () => {
     for (const value of invalidHttpValues) {
-      resetState();
+      await resetState();
       const player = playerId();
       const seeded = await http('POST', player, '/trade', { coinId, side: 'buy', amountUsdd: 10 });
       assert.equal(seeded.status, 200);
@@ -210,7 +211,7 @@ async function main(): Promise<void> {
 
   await run('SELL amountUsdd REST rejects non-number JSON values without side effects', async () => {
     for (const value of invalidHttpValues) {
-      resetState();
+      await resetState();
       const player = playerId();
       const seeded = await http('POST', player, '/trade', { coinId, side: 'buy', amountUsdd: 10 });
       assert.equal(seeded.status, 200);
@@ -229,7 +230,7 @@ async function main(): Promise<void> {
         ['sell', 'amountCoin'],
         ['sell', 'amountUsdd'],
       ] as const) {
-        resetState();
+        await resetState();
         const before = { ...state.coins[coinId].pool };
         const result = await http('POST', playerId(), '/trade/quote', withAmount(side, field, value));
         assert.equal(result.status, 400, `${side}.${field}=${String(value)}`);
@@ -248,7 +249,7 @@ async function main(): Promise<void> {
 
   await run('executeTrade rejects NaN, infinities, zero and negatives at its boundary', async () => {
     for (const value of invalidNumbers) {
-      resetState();
+      await resetState();
       const player = playerId();
       await http('GET', player, '/portfolio');
       const beforeBuy = await snapshot(player);
@@ -277,7 +278,7 @@ async function main(): Promise<void> {
 
   await run('BUY rejects below MIN_TRADE_USDD and allows the boundary', async () => {
     for (const amount of [0.01, 0.99, MIN_TRADE_USDD - Number.EPSILON]) {
-      resetState();
+      await resetState();
       const player = playerId();
       await http('GET', player, '/portfolio');
       const before = await snapshot(player);
@@ -296,7 +297,7 @@ async function main(): Promise<void> {
     }
 
     for (const amount of [MIN_TRADE_USDD, 1.01, 100]) {
-      resetState();
+      await resetState();
       const player = playerId();
       const quote = await http('POST', player, '/trade/quote', { coinId, side: 'buy', amountUsdd: amount });
       assert.equal(quote.status, 200);
@@ -307,7 +308,7 @@ async function main(): Promise<void> {
   });
 
   await run('SELL requires at least MIN_TRADE_USDD gross AMM output', async () => {
-    resetState();
+    await resetState();
     const player = playerId();
     const seeded = await http('POST', player, '/trade', { coinId, side: 'buy', amountUsdd: 10 });
     assert.equal(seeded.status, 200);
@@ -374,7 +375,7 @@ async function main(): Promise<void> {
   });
 
   await run('valid numeric BUY, SELL and quotes still work', async () => {
-    resetState();
+    await resetState();
     const player = playerId();
     const beforeBuy = await snapshotAfterEnsure(player);
     const quoteBuyResult = await http('POST', player, '/trade/quote', { coinId, side: 'buy', amountUsdd: 10 });
@@ -404,7 +405,7 @@ async function main(): Promise<void> {
 
   await run('BUY quote matches execution below and above liquidity cap', async () => {
     for (const capped of [false, true]) {
-      resetState();
+      await resetState();
       const player = playerId();
       await snapshotAfterEnsure(player);
       const requested = capped ? state.coins[coinId].pool.usddReserve : 100;
@@ -432,7 +433,7 @@ async function main(): Promise<void> {
   });
 
   await run('SELL quote matches execution below and above liquidity cap', async () => {
-    resetState();
+    await resetState();
     const ordinaryPlayer = playerId();
     const seeded = await http('POST', ordinaryPlayer, '/trade', { coinId, side: 'buy', amountUsdd: 100 });
     assert.equal(seeded.status, 200);
@@ -455,6 +456,11 @@ async function main(): Promise<void> {
       'INSERT INTO player_holdings (player_id, coin_id, amount, avg_buy_price) VALUES ($1, $2, $3, $4)',
       [cappedPlayer, coinId, requested, 10]
     );
+    // The fixture transfers these coins out of the pool; it must not mint an
+    // extra 80% of supply on top of a full initial pool.
+    const fixturePrice = price(state.coins[coinId].pool);
+    state.coins[coinId].pool.coinReserve -= requested;
+    state.coins[coinId].pool.usddReserve = state.coins[coinId].pool.coinReserve * fixturePrice;
     const before = await snapshot(cappedPlayer);
     const quote = await http('POST', cappedPlayer, '/trade/quote', { coinId, side: 'sell', amountCoin: requested });
     assert.equal(quote.status, 200);

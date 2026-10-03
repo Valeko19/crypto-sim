@@ -1,12 +1,13 @@
 import { createHash } from 'node:crypto';
 import { db } from '../db/index.js';
 import { EngineState } from './state.js';
-import { Pool, TradeResult, buyWithUsdd, sellCoin, quoteSellExecution, price, isFinitePositiveAmount } from './amm.js';
+import { Pool, TradeResult, buyWithUsdd, sellCoin, quoteSellExecution, price, isFinitePositiveAmount, limitPoolSupply } from './amm.js';
 import { COIN_MAP, tradeFeePct, MIN_TRADE_USDD } from '../config/coins.js';
 import {
   ensurePlayerExists, getPlayer, applyBuy, applySell, getHolding, reservedStakedAmount,
   reserveTradeRequest, getTradeRequest, saveTradeRequestResponse, savePoolSnapshotWithClient,
   isCurrentDueBotFiring, settleBotFiring,
+  getTotalHeldForCoin,
 } from '../db/queries.js';
 import { recordTradeVolume } from './dailyVolume.js';
 import { withMarketLock } from './marketLock.js';
@@ -118,6 +119,10 @@ async function executeTradeUnlocked(state: EngineState, playerId: string, params
     }
     const player = await getPlayer(playerId, tx);
     const nextPool: Pool = { ...cs.pool };
+    const freeFloat = cfg.emission * (1 - cfg.npcLockedPct);
+    const ownedBefore = await getTotalHeldForCoin(coinId, tx);
+    limitPoolSupply(nextPool, freeFloat, ownedBefore, cfg.startPrice);
+    const holdingBefore = await getHolding(playerId, coinId, tx);
     let response: TradeResponse;
     let coinDelta: number;
     let volumeDelta: number;
@@ -167,7 +172,18 @@ async function executeTradeUnlocked(state: EngineState, playerId: string, params
       await applySell(tx, playerId, coinId, result.coinAmount, netOut, result.avgPrice, fee);
     }
 
-    await savePoolSnapshotWithClient(tx, coinId, nextPool.coinReserve, nextPool.usddReserve);
+    const nextOwned = await getTotalHeldForCoin(coinId, tx);
+    const holdingAfter = await getHolding(playerId, coinId, tx);
+    if ((holdingAfter?.amount ?? 0) === (holdingBefore?.amount ?? 0)) {
+      throw new TradeError('trade below holding precision');
+    }
+    // The 30% cap always leaves coins in the pool. If the holdings addition
+    // rounds up to the entire supply, reject and roll back instead of selling
+    // inventory below representable precision or publishing an empty pool.
+    if (side === 'buy' && nextOwned >= freeFloat) throw new TradeError('insufficient tradeable supply');
+    limitPoolSupply(nextPool, freeFloat, nextOwned, cfg.startPrice);
+    response.priceAfter = price(nextPool);
+    await savePoolSnapshotWithClient(tx, coinId, nextPool.coinReserve, nextPool.usddReserve, nextPool.referencePrice);
     if (requestId !== undefined) await saveTradeRequestResponse(tx, playerId, requestId, response);
     if (botFiring) {
       await settleBotFiring(
@@ -179,13 +195,15 @@ async function executeTradeUnlocked(state: EngineState, playerId: string, params
         new Date(Date.now() + botFiring.intervalMs).toISOString()
       );
     }
-    return { replayed: false as const, response, nextPool, coinDelta, volumeDelta };
+    return { replayed: false as const, response, nextPool, nextOwned, coinDelta, volumeDelta };
   });
 
   if (!outcome.replayed) {
     cs.pool.coinReserve = outcome.nextPool.coinReserve;
     cs.pool.usddReserve = outcome.nextPool.usddReserve;
-    cs.playerOwnedCoins = Math.max(0, cs.playerOwnedCoins + outcome.coinDelta);
+    if (outcome.nextPool.referencePrice !== undefined) cs.pool.referencePrice = outcome.nextPool.referencePrice;
+    else delete cs.pool.referencePrice;
+    cs.playerOwnedCoins = outcome.nextOwned;
     recordTradeVolume(playerId, outcome.volumeDelta);
   }
   return { ...outcome.response, replayed: outcome.replayed };
