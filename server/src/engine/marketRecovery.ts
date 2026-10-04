@@ -44,7 +44,8 @@ export async function recoverMarketLocked(state: EngineState): Promise<void> {
       return { result, committed: receipt.rows[0]?.revision === pending.revision };
     });
     // A durable receipt proves that this exact candidate committed. Preserve
-    // its tick metadata / trade turnover once, but pools always come from DB.
+    // its tick metadata once, but pools always come from DB. Daily turnover
+    // was settled in that transaction already; publication never increments it.
     pending.committed = recovered.committed;
     if (recovered.committed) { pending.publish?.(); pending.publish = undefined; }
     for (const item of recovered.result) {

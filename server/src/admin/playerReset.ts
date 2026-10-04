@@ -6,6 +6,7 @@ import { db } from '../db/index.js';
 export async function resetAllPlayers(): Promise<number> {
   const players = await db.query('SELECT id FROM players');
   await db.query('DELETE FROM player_holdings');
+  await db.query('DELETE FROM player_daily_volume');
   await db.query('DELETE FROM quest_progress');
   await db.query('DELETE FROM player_rank_progress');
   await db.query('DELETE FROM staking_positions');

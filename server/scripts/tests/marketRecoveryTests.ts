@@ -27,7 +27,7 @@ let sequence = 0;
 const buy = (requestId = `recovery-${++sequence}`) => executeTrade(state, 'recovery', { coinId: 'btcr', side: 'buy', amountUsdd: 10, requestId });
 async function snapshot() {
   return { player: await q.getPlayer('recovery'), holdings: (await db.query('SELECT * FROM player_holdings ORDER BY player_id,coin_id')).rows,
-    pools: await q.getAllPoolSnapshots(), logs: (await db.query('SELECT * FROM trade_log ORDER BY id')).rows, volume: todaysVolume('recovery') };
+    pools: await q.getAllPoolSnapshots(), logs: (await db.query('SELECT * FROM trade_log ORDER BY id')).rows, volume: await todaysVolume('recovery') };
 }
 async function exact() {
   for (const cfg of COINS) {

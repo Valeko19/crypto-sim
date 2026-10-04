@@ -8,7 +8,7 @@ import {
   isCurrentDueBotFiring, settleBotFiring,
   getTotalHeldForCoin,
 } from '../db/queries.js';
-import { recordTradeVolume } from './dailyVolume.js';
+import { recordTradeVolume, utcDay } from './dailyVolume.js';
 import { marketTransaction, withMarketState } from './marketRecovery.js';
 import { saveValuationPrices, recordRankPeaks } from '../db/rankValuation.js';
 import { calculateBuyCharge } from './buyBudget.js';
@@ -118,6 +118,9 @@ async function executeTradeUnlocked(state: EngineState, playerId: string, params
       await tx.query('SELECT id FROM players WHERE id = $1 FOR UPDATE', [playerId]);
     }
     const player = await getPlayer(playerId, tx);
+    // Capture once in execution, after lock/replay checks. Publication,
+    // recovery and HTTP response timing must never select a different day.
+    const executionDay = utcDay();
     const nextPool: Pool = { ...cs.pool };
     const freeFloat = cfg.emission * (1 - cfg.npcLockedPct);
     const ownedBefore = await getTotalHeldForCoin(coinId, tx);
@@ -183,6 +186,7 @@ async function executeTradeUnlocked(state: EngineState, playerId: string, params
     if (side === 'buy' && nextOwned >= freeFloat) throw new TradeError('insufficient tradeable supply');
     limitPoolSupply(nextPool, freeFloat, nextOwned, cfg.startPrice);
     response.priceAfter = price(nextPool);
+    await recordTradeVolume(tx, playerId, executionDay, volumeDelta);
     await savePoolSnapshotWithClient(tx, coinId, nextPool.coinReserve, nextPool.usddReserve, nextPool.referencePrice);
     await saveValuationPrices(tx, state, { coinId, pool: nextPool });
     await recordRankPeaks(tx);
@@ -205,7 +209,6 @@ async function executeTradeUnlocked(state: EngineState, playerId: string, params
     if (outcome.nextPool.referencePrice !== undefined) cs.pool.referencePrice = outcome.nextPool.referencePrice;
     else delete cs.pool.referencePrice;
     cs.playerOwnedCoins = outcome.nextOwned;
-    recordTradeVolume(playerId, outcome.volumeDelta);
   });
   return { ...outcome.response, replayed: outcome.replayed };
 }

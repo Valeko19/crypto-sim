@@ -192,6 +192,14 @@ export async function initDb() {
     CREATE TABLE IF NOT EXISTS market_commit (
       singleton BOOLEAN PRIMARY KEY CHECK (singleton), revision TEXT NOT NULL
     );
+    -- Forward-only accounting: the legacy process-local daily counter cannot
+    -- be recovered reliably. Existing balances/logs/claims remain untouched.
+    CREATE TABLE IF NOT EXISTS player_daily_volume (
+      player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      utc_day DATE NOT NULL,
+      volume NUMERIC(650,324) NOT NULL CHECK (volume >= 0 AND volume < 'Infinity'::numeric),
+      PRIMARY KEY (player_id, utc_day)
+    );
   `);
   await db.query(`INSERT INTO market_valuation_prices (coin_id, price)
     SELECT c.id, COALESCE(CASE WHEN p.coin_reserve > 0 THEN p.usdd_reserve / p.coin_reserve

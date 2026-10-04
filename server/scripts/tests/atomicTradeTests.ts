@@ -59,7 +59,7 @@ async function snapshot(playerId: string) {
     durablePool: pools.find(row => row.coin_id === 'btcr') ?? null,
     livePool: { ...pool },
     playerOwnedCoins: state.coins.btcr.playerOwnedCoins,
-    dailyVolume: todaysVolume(playerId),
+    dailyVolume: await todaysVolume(playerId),
   };
 }
 

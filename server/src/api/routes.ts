@@ -13,7 +13,7 @@ import { MACRO_CONFIG, MACRO_ORDER, MacroPhase } from '../engine/macroCycle.js';
 import { COINS, COIN_MAP, tradeFeePct, sectionOf, MIN_TRADE_USDD } from '../config/coins.js';
 import { RANKS, RANK_UP_REWARDS } from '../config/ranks.js';
 import { DAILY_BONUS_AMOUNT, EMISSION_THRESHOLDS, DAILY_VOLUME_THRESHOLD, DAILY_VOLUME_REWARD } from '../config/quests.js';
-import { todaysVolume } from '../engine/dailyVolume.js';
+import { dailyVolumeProgress } from '../engine/dailyVolume.js';
 import { SHOP_PACKAGES, STARS_TO_USDD_RATE, DAILY_LIMIT_USDD } from '../config/shop.js';
 import { MIN_BOT_INTERVAL_MS } from '../config/tradingBot.js';
 import { remainingToday, recordSpend } from './shopState.js';
@@ -284,10 +284,11 @@ export function createRouter(state: EngineState) {
   router.get('/quests', marketHandler(async (req, res) => {
     const portfolio = await computePortfolio(state, req.playerId);
     const { db } = await import('../db/index.js');
-    const { progress, highestLeagueIndex, earned } = await db.transaction(async tx => ({
+    const { progress, highestLeagueIndex, earned, volume } = await db.transaction(async tx => ({
       progress: await getQuestProgress(req.playerId, tx),
       highestLeagueIndex: await getHighestLeagueIndex(req.playerId, tx),
       earned: await getEarnedTotals(req.playerId, tx),
+      volume: await dailyVolumeProgress(req.playerId, tx),
     }));
 
     const dailyRow = progress.find(p => p.quest_type === 'daily_bonus');
@@ -297,7 +298,6 @@ export function createRouter(state: EngineState) {
     const volumeRow = progress.find(p => p.quest_type === 'daily_volume');
     const volumeClaimedAt = volumeRow?.claimed_at ? new Date(volumeRow.claimed_at) : null;
     const volumeRecentlyClaimed = !!volumeClaimedAt && Date.now() - volumeClaimedAt.getTime() < 24 * 60 * 60 * 1000;
-    const volumeToday = todaysVolume(req.playerId);
 
     // Always returns all 5 thresholds, even with no holdings at all — a
     // brand-new player should see the full ladder (all "not met") rather
@@ -344,8 +344,8 @@ export function createRouter(state: EngineState) {
       dailyVolume: {
         amount: DAILY_VOLUME_REWARD,
         threshold: DAILY_VOLUME_THRESHOLD,
-        current: volumeToday,
-        met: volumeToday >= DAILY_VOLUME_THRESHOLD,
+        current: volume.current,
+        met: volume.met,
         claimed: volumeRecentlyClaimed,
         claimedAt: volumeRow?.claimed_at ?? null,
       },

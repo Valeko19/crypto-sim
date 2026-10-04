@@ -21,7 +21,7 @@ const { createAuthSession } = await import('../../src/auth/sessions.js');
 const { claimQuest } = await import('../../src/engine/quests.js');
 const { createRouter } = await import('../../src/api/routes.js');
 const { createInitialState } = await import('../../src/engine/state.js');
-const { recordTradeVolume } = await import('../../src/engine/dailyVolume.js');
+const { recordTradeVolume, utcDay } = await import('../../src/engine/dailyVolume.js');
 const { COINS } = await import('../../src/config/coins.js');
 const { DAILY_BONUS_AMOUNT, DAILY_VOLUME_REWARD, DAILY_VOLUME_THRESHOLD, EMISSION_THRESHOLDS } = await import('../../src/config/quests.js');
 const { RANK_UP_REWARDS } = await import('../../src/config/ranks.js');
@@ -47,7 +47,7 @@ async function run(name: string, test: () => Promise<void>) {
 async function fixture(kind: Kind): Promise<Fixture> {
   const id = `tg_quest_test_${++sequence}`;
   await ensurePlayer(id, id);
-  if (kind === 'daily_volume') recordTradeVolume(id, DAILY_VOLUME_THRESHOLD);
+  if (kind === 'daily_volume') await db.transaction(tx => recordTradeVolume(tx, id, utcDay(), DAILY_VOLUME_THRESHOLD));
   if (kind === 'rank') await setHighestLeagueIndex(id, 1);
   if (kind === 'emission') {
     for (const coin of COINS.slice(0, 2)) {
@@ -165,7 +165,7 @@ async function main() {
   }
   await run('64 mixed claims pay each of four distinct rewards exactly once', async () => {
     const f = await fixture('emission');
-    recordTradeVolume(f.id, DAILY_VOLUME_THRESHOLD);
+    await db.transaction(tx => recordTradeVolume(tx, f.id, utcDay(), DAILY_VOLUME_THRESHOLD));
     await setHighestLeagueIndex(f.id, 1);
     const quests = ['daily_bonus', 'daily_volume', f.questId, 'rank_reward:1'];
     const before = await snapshot(f.id);

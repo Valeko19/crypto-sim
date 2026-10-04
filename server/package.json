@@ -13,6 +13,7 @@
     "test:auth": "tsx scripts/tests/authSessionTests.ts",
     "test:accounts": "tsx scripts/tests/accountIsolationTests.ts",
     "test:quests": "tsx scripts/tests/questRewardTests.ts",
+    "test:daily-volume": "tsx scripts/tests/dailyVolumeTests.ts",
     "test:ranks": "tsx scripts/tests/rankConsistencyTests.ts",
     "test:recovery": "tsx scripts/tests/marketRecoveryTests.ts",
     "test:tick-backpressure": "tsx scripts/tests/tickBackpressureTests.ts",

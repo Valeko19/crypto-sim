@@ -2,9 +2,9 @@ import { db } from '../db/index.js';
 import { recordRankPeaks } from '../db/rankValuation.js';
 import { getQuestProgress, claimQuestRow, getHolding, getHighestLeagueIndex, addEarnedTotal, type EarnedCategory } from '../db/queries.js';
 import { COIN_MAP } from '../config/coins.js';
-import { DAILY_BONUS_AMOUNT, DAILY_VOLUME_REWARD, DAILY_VOLUME_THRESHOLD, EMISSION_THRESHOLDS } from '../config/quests.js';
+import { DAILY_BONUS_AMOUNT, DAILY_VOLUME_REWARD, EMISSION_THRESHOLDS } from '../config/quests.js';
 import { RANKS, RANK_UP_REWARDS } from '../config/ranks.js';
-import { todaysVolume } from './dailyVolume.js';
+import { dailyVolumeProgress } from './dailyVolume.js';
 
 export class QuestClaimError extends Error {}
 
@@ -26,7 +26,7 @@ export async function claimQuest(playerId: string, questId: unknown): Promise<nu
       const row = progress.find(p => p.quest_type === questType);
       const lastClaim = row?.claimed_at ? new Date(row.claimed_at).getTime() : 0;
       if (Date.now() - lastClaim < 24 * 60 * 60 * 1000) throw new QuestClaimError('already claimed');
-      if (questId === 'daily_volume' && todaysVolume(playerId) < DAILY_VOLUME_THRESHOLD) {
+      if (questId === 'daily_volume' && !(await dailyVolumeProgress(playerId, tx)).met) {
         throw new QuestClaimError('insufficient volume');
       }
       reward = questId === 'daily_bonus' ? DAILY_BONUS_AMOUNT : DAILY_VOLUME_REWARD;
