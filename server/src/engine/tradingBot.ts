@@ -22,7 +22,9 @@ export async function runTradingBots(state: EngineState): Promise<void> {
       || !Number.isFinite(new Date(bot.next_run_at!).getTime())) continue;
     if (!bot.next_run_at || new Date(bot.next_run_at).getTime() > now) continue;
     const scheduledAt = new Date(bot.next_run_at).toISOString();
-    const requestId = `bot:${scheduledAt}`;
+    // Keep time first for the existing chronological request pruning; UUID
+    // separates different runs even when their scheduled timestamps coincide.
+    const requestId = `bot:${scheduledAt}:${bot.run_id}`;
     let replayed = false;
     try {
       const result = await executeTrade(state, bot.player_id, {
@@ -30,7 +32,7 @@ export async function runTradingBots(state: EngineState): Promise<void> {
         side: bot.side!,
         ...(bot.side === 'buy' ? { amountUsdd: bot.amount! } : { amountCoin: bot.amount! }),
         requestId,
-        botFiring: { scheduledAt, intervalMs: bot.interval_ms! },
+        botFiring: { runId: bot.run_id, scheduledAt, intervalMs: bot.interval_ms! },
       });
       replayed = result.replayed;
     } catch (error) {
@@ -38,12 +40,12 @@ export async function runTradingBots(state: EngineState): Promise<void> {
       if (error instanceof StaleBotFiringError) continue;
       // insufficient balance/holding, coin not found, below MIN_TRADE_USDD, etc.
       // — skip this firing, never let it propagate out of the loop.
-      const rescheduled = await advanceBotNextRunIfDue(bot.player_id, bot.interval_ms!, scheduledAt).catch(() => false);
+      const rescheduled = await advanceBotNextRunIfDue(bot.player_id, bot.interval_ms!, scheduledAt, bot.run_id).catch(() => false);
       if (rescheduled) await prunePriorBotTradeRequests(bot.player_id, requestId).catch(() => {});
       continue;
     }
     if (replayed) {
-      const rescheduled = await advanceBotNextRunIfDue(bot.player_id, bot.interval_ms!, scheduledAt).catch(() => false);
+      const rescheduled = await advanceBotNextRunIfDue(bot.player_id, bot.interval_ms!, scheduledAt, bot.run_id).catch(() => false);
       if (rescheduled) await prunePriorBotTradeRequests(bot.player_id, requestId).catch(() => {});
     } else {
       await prunePriorBotTradeRequests(bot.player_id, requestId).catch(() => {});

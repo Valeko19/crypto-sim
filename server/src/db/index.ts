@@ -125,6 +125,7 @@ export async function initDb() {
     -- TABLE IF NOT EXISTS is a no-op there; ADD COLUMN IF NOT EXISTS is not).
     ALTER TABLE trading_bots ADD COLUMN IF NOT EXISTS run_total_usdd DOUBLE PRECISION NOT NULL DEFAULT 0;
     ALTER TABLE trading_bots ADD COLUMN IF NOT EXISTS run_total_coins DOUBLE PRECISION NOT NULL DEFAULT 0;
+    ALTER TABLE trading_bots ADD COLUMN IF NOT EXISTS run_id TEXT NOT NULL DEFAULT gen_random_uuid()::text;
 
     -- Tracks the highest league/rank index a player has EVER reached, so the
     -- one-time rank-up bonus (config/ranks.ts RANK_UP_REWARDS) can never be

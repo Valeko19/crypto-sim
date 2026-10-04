@@ -28,6 +28,7 @@ export class StaleBotFiringError extends Error {
 }
 
 export interface BotFiring {
+  runId: string;
   scheduledAt: string;
   intervalMs: number;
 }
@@ -100,7 +101,7 @@ async function executeTradeUnlocked(state: EngineState, playerId: string, params
   await ensurePlayerExists(playerId);
   const requestHash = requestId === undefined ? undefined : hashTradeParams({ coinId, side, amountUsdd, amountCoin, useMax });
   const outcome = await marketTransaction(state, async tx => {
-    if (botFiring && !await isCurrentDueBotFiring(tx, playerId, botFiring.scheduledAt)) {
+    if (botFiring && !await isCurrentDueBotFiring(tx, playerId, botFiring.scheduledAt, botFiring.runId)) {
       throw new StaleBotFiringError();
     }
     if (requestId !== undefined) {
@@ -198,7 +199,8 @@ async function executeTradeUnlocked(state: EngineState, playerId: string, params
         botFiring.scheduledAt,
         volumeDelta,
         Math.abs(coinDelta),
-        new Date(Date.now() + botFiring.intervalMs).toISOString()
+        new Date(Date.now() + botFiring.intervalMs).toISOString(),
+        botFiring.runId
       );
     }
     return { replayed: false as const, response, nextPool, nextOwned, coinDelta, volumeDelta };

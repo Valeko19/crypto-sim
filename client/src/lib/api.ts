@@ -67,7 +67,7 @@ export interface ShopStatus {
 }
 
 export interface TradingBotConfig {
-  coinId: string; side: 'buy' | 'sell'; intervalMs: number; amount: number; enabled: boolean; nextRunAt: string | null;
+  runId: string; coinId: string; side: 'buy' | 'sell'; intervalMs: number; amount: number; enabled: boolean; nextRunAt: string | null;
   runTotalUsdd: number; runTotalCoins: number;
 }
 

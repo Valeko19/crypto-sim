@@ -237,9 +237,10 @@ async function main(): Promise<void> {
       'SELECT run_total_usdd, run_total_coins, next_run_at FROM trading_bots WHERE player_id = $1', [playerId]
     );
 
+    const runId = (await db.query<{run_id: string}>('SELECT run_id FROM trading_bots WHERE player_id=$1', [playerId])).rows[0].run_id;
     await assert.rejects(withQueryFailure('SET run_total_usdd = run_total_usdd +', () => executeTrade(state, playerId, {
-      coinId: 'btcr', side: 'buy', amountUsdd: 10, requestId: `bot:${scheduledAt}`,
-      botFiring: { scheduledAt, intervalMs: 1_000 },
+      coinId: 'btcr', side: 'buy', amountUsdd: 10, requestId: `bot:${scheduledAt}:${runId}`,
+      botFiring: { scheduledAt, intervalMs: 1_000, runId },
     })));
 
     assert.deepEqual(await snapshot(playerId), before);

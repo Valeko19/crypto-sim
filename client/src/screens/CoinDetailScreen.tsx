@@ -138,6 +138,10 @@ export function CoinDetailScreen() {
   // reachable from state 2 (bot not active on this coin), so this always
   // (re)targets the bot at the current coinId.
   async function launchBot() {
+    if (botStatus?.config?.enabled) {
+      setBotMessage('Сначала остановите работающего бота');
+      return;
+    }
     const amt = Number(botAmount);
     if (!amt || amt <= 0) {
       setBotAmountError('Введите сумму сделки');
@@ -156,6 +160,7 @@ export function CoinDetailScreen() {
       refreshBotStatus();
     } catch (e: any) {
       setBotMessage(e.message ?? 'Ошибка запуска бота');
+      refreshBotStatus();
     } finally {
       setBotBusy(false);
     }
@@ -628,6 +633,14 @@ export function CoinDetailScreen() {
                     Остановить бота
                   </button>
                 </>
+              ) : botStatus?.config?.enabled ? (
+                <div className="rounded-xl bg-card-light p-3 text-sm">
+                  <p>Бот работает на другой монете. Остановите его перед изменением настроек.</p>
+                  <button onClick={stopBot} disabled={botBusy}
+                    className="mt-3 w-full rounded-xl border border-negative py-2.5 text-sm font-semibold text-negative disabled:opacity-40">
+                    Остановить бота
+                  </button>
+                </div>
               ) : (
                 <>
                   <div className="mb-3 flex gap-2">

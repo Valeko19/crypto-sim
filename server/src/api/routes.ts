@@ -24,7 +24,7 @@ import {
   getQuestProgress, reservedStakedAmount,
   createStakingPosition, getPositionById, requestUnstakePosition, deleteStakingPosition,
   withdrawStakingPosition, claimFlexibleCoinRewards, isPositionReserved,
-  getTradingBot, configureTradingBot, setTradingBotEnabled, getHighestLeagueIndex,
+  getTradingBot, configureTradingBot, setTradingBotEnabled, BotConfigConflictError, getHighestLeagueIndex,
   getEarnedTotals,
 } from '../db/queries.js';
 import { computePortfolio, computeLeaderboard, findEmissionLeader, computeStaking } from './helpers.js';
@@ -38,6 +38,7 @@ function marketHandler(work: (req: Request, res: Response) => Promise<unknown>):
   return (req, res, next) => {
     void work(req, res).catch(error => {
       if (error instanceof MarketUnavailableError) res.status(503).json({ error: error.message });
+      else if (error instanceof BotConfigConflictError) res.status(409).json({ error: error.message });
       else next(error);
     });
   };
@@ -411,6 +412,7 @@ export function createRouter(state: EngineState) {
     const bot = await getTradingBot(req.playerId);
     res.json({
       config: bot && bot.coin_id ? {
+        runId: bot.run_id,
         coinId: bot.coin_id,
         side: bot.side,
         intervalMs: bot.interval_ms,

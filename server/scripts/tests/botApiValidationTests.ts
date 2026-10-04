@@ -56,6 +56,7 @@ try {
     for (const row of botsBefore.rows as any[]) {
       if (!row.player_id.startsWith('legacy')) continue;
       token = (await createAuthSession(row.player_id)).sessionToken;
+      assert.equal(await request('/toggle', { enabled: false }), 200);
       assert.equal(await request('/config', valid), 200);
       const fixed = await q.getTradingBot(row.player_id);
       assert.equal(fixed?.amount, 10); assert.equal(fixed?.coin_id, 'btcr');
@@ -92,6 +93,7 @@ try {
       for (const intervalMs of BOT_CONFIG_INTERVALS_MS) for (const coin of COINS) for (const side of ['buy', 'sell']) assert.equal(await request('/config', { ...valid, coinId: coin.id, side, intervalMs, amount: 0.5 }), 200);
       for (const enabled of [true, false, true]) { assert.equal(await request('/toggle', { enabled }), 200); assert.equal((await q.getTradingBot('A'))?.enabled, enabled); }
       await reject('/toggle', { enabled: 'false' });
+      assert.equal(await request('/toggle', { enabled: false }), 200);
       await q.configureTradingBot('B', 'btcr', 'sell', 3000, 20); const other = await q.getTradingBot('B');
       assert.equal(await request('/config', { ...valid, playerId: 'B', player_id: 'B' }), 200);
       assert.equal(await request('/toggle', { enabled: false, playerId: 'B', player_id: 'B' }), 200);

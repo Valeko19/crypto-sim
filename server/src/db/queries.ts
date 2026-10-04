@@ -467,6 +467,7 @@ export async function claimFlexibleCoinRewards(playerId: string, coinId: string)
 // an overwrite of this same row via configureTradingBot's upsert.
 
 export interface TradingBotRow {
+  run_id: string;
   player_id: string;
   purchased: boolean;
   coin_id: string | null;
@@ -490,6 +491,10 @@ export async function getTradingBot(playerId: string): Promise<TradingBotRow | n
 // new row falls back to the column's own DEFAULT FALSE (configure, then
 // explicitly enable); editing an existing (possibly paused) bot's settings
 // can never silently resume it.
+export class BotConfigConflictError extends Error {
+  constructor() { super('Stop the active bot before changing its configuration'); }
+}
+
 export async function configureTradingBot(
   playerId: string,
   coinId: string,
@@ -498,13 +503,15 @@ export async function configureTradingBot(
   amount: number
 ): Promise<void> {
   const nextRunAt = new Date(Date.now() + intervalMs).toISOString();
-  await db.query(
+  const updated = await db.query(
     `INSERT INTO trading_bots (player_id, purchased, coin_id, side, interval_ms, amount, next_run_at)
      VALUES ($1, TRUE, $2, $3, $4, $5, $6)
      ON CONFLICT (player_id) DO UPDATE SET
-       coin_id = $2, side = $3, interval_ms = $4, amount = $5, next_run_at = $6`,
+       coin_id = $2, side = $3, interval_ms = $4, amount = $5, next_run_at = $6
+     WHERE trading_bots.enabled = FALSE RETURNING player_id`,
     [playerId, coinId, side, intervalMs, amount, nextRunAt]
   );
+  if (!updated.rows.length) throw new BotConfigConflictError();
 }
 
 // Resets next_run_at when enabling, so resuming a long-paused bot doesn't
@@ -513,12 +520,14 @@ export async function configureTradingBot(
 // metrics start fresh on every start, not carried over from a previous run.
 export async function setTradingBotEnabled(playerId: string, enabled: boolean): Promise<void> {
   if (enabled) {
-    const bot = await getTradingBot(playerId);
-    if (!bot?.interval_ms) return;
+    // Lock the firing's row and read its interval in the same atomic statement.
+    // Repeated Start is a no-op, including totals, identity and schedule.
     await db.query(
-      `UPDATE trading_bots SET enabled = TRUE, next_run_at = $2, run_total_usdd = 0, run_total_coins = 0
-       WHERE player_id = $1`,
-      [playerId, new Date(Date.now() + bot.interval_ms).toISOString()]
+      `UPDATE trading_bots SET enabled = TRUE, run_id = $3,
+         next_run_at = $2::timestamptz + interval_ms * interval '1 millisecond',
+         run_total_usdd = 0, run_total_coins = 0
+       WHERE player_id = $1 AND enabled = FALSE AND interval_ms > 0`,
+      [playerId, new Date(Date.now()).toISOString(), randomUUID()]
     );
   } else {
     await db.query('UPDATE trading_bots SET enabled = FALSE WHERE player_id = $1', [playerId]);
@@ -528,14 +537,15 @@ export async function setTradingBotEnabled(playerId: string, enabled: boolean): 
 export async function isCurrentDueBotFiring(
   client: QueryClient,
   playerId: string,
-  scheduledAt: string
+  scheduledAt: string,
+  runId: string
 ): Promise<boolean> {
   const res = await client.query<{ player_id: string }>(
     `SELECT player_id FROM trading_bots
      WHERE player_id = $1 AND enabled = TRUE AND purchased = TRUE
-       AND next_run_at = $2 AND next_run_at <= now()
+       AND next_run_at = $2 AND run_id = $3 AND next_run_at <= now()
      FOR UPDATE`,
-    [playerId, scheduledAt]
+    [playerId, scheduledAt, runId]
   );
   return res.rows.length > 0;
 }
@@ -546,15 +556,16 @@ export async function settleBotFiring(
   scheduledAt: string,
   usddDelta: number,
   coinDelta: number,
-  nextRunAt: string
+  nextRunAt: string,
+  runId: string
 ): Promise<void> {
   const res = await client.query<{ player_id: string }>(
     `UPDATE trading_bots
      SET run_total_usdd = run_total_usdd + $3, run_total_coins = run_total_coins + $4,
          next_run_at = $5
-     WHERE player_id = $1 AND enabled = TRUE AND purchased = TRUE AND next_run_at = $2
+     WHERE player_id = $1 AND enabled = TRUE AND purchased = TRUE AND next_run_at = $2 AND run_id = $6
      RETURNING player_id`,
-    [playerId, scheduledAt, usddDelta, coinDelta, nextRunAt]
+    [playerId, scheduledAt, usddDelta, coinDelta, nextRunAt, runId]
   );
   if (!res.rows.length) throw new Error('bot firing is no longer current');
 }
@@ -568,13 +579,14 @@ export async function getAllEnabledTradingBots(): Promise<TradingBotRow[]> {
 export async function advanceBotNextRunIfDue(
   playerId: string,
   intervalMs: number,
-  scheduledAt: string
+  scheduledAt: string,
+  runId: string
 ): Promise<boolean> {
   const res = await db.query<{ player_id: string }>(
     `UPDATE trading_bots SET next_run_at = $2
-     WHERE player_id = $1 AND enabled = TRUE AND purchased = TRUE AND next_run_at = $3
+     WHERE player_id = $1 AND enabled = TRUE AND purchased = TRUE AND next_run_at = $3 AND run_id = $4
      RETURNING player_id`,
-    [playerId, new Date(Date.now() + intervalMs).toISOString(), scheduledAt]
+    [playerId, new Date(Date.now() + intervalMs).toISOString(), scheduledAt, runId]
   );
   return res.rows.length > 0;
 }
