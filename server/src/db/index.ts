@@ -1,5 +1,6 @@
 import { PGlite } from '@electric-sql/pglite';
 import path from 'node:path';
+import { COINS } from '../config/coins.js';
 
 // Embedded real Postgres (compiled to WASM) — no local Postgres install/service
 // required. Data persists to disk between dev-server restarts.
@@ -185,5 +186,18 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS trade_log_player_id_idx ON trade_log(player_id);
     CREATE INDEX IF NOT EXISTS trade_log_coin_id_idx ON trade_log(coin_id);
     CREATE INDEX IF NOT EXISTS trade_log_created_at_idx ON trade_log(created_at);
+    CREATE TABLE IF NOT EXISTS market_valuation_prices (
+      coin_id TEXT PRIMARY KEY, price DOUBLE PRECISION NOT NULL CHECK (price > 0)
+    );
+    CREATE TABLE IF NOT EXISTS market_commit (
+      singleton BOOLEAN PRIMARY KEY CHECK (singleton), revision TEXT NOT NULL
+    );
   `);
+  await db.query(`INSERT INTO market_valuation_prices (coin_id, price)
+    SELECT c.id, COALESCE(CASE WHEN p.coin_reserve > 0 THEN p.usdd_reserve / p.coin_reserve
+      ELSE p.reference_price END, c.price)
+    FROM jsonb_to_recordset($1::jsonb) AS c(id text, price double precision)
+    LEFT JOIN coin_pools p ON p.coin_id = c.id
+    ON CONFLICT (coin_id) DO NOTHING`,
+  [JSON.stringify(COINS.map(c => ({ id: c.id, price: c.startPrice })))]);
 }

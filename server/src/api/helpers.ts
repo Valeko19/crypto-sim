@@ -1,4 +1,6 @@
 import { EngineState } from '../engine/state.js';
+import { db } from '../db/index.js';
+import { withMarketState } from '../engine/marketRecovery.js';
 import { price } from '../engine/amm.js';
 import { COINS, COIN_MAP } from '../config/coins.js';
 import { rankForNetWorth, leagueIndex, RANKS } from '../config/ranks.js';
@@ -34,10 +36,10 @@ export interface PortfolioView {
   username: string;
 }
 
-function buildPortfolioView(state: EngineState, player: PlayerRow, holdingRows: HoldingRow[]): PortfolioView {
+function buildPortfolioView(prices: Record<string, number>, player: PlayerRow, holdingRows: HoldingRow[]): PortfolioView {
   const holdings: HoldingView[] = holdingRows.map(h => {
     const cfg = COIN_MAP[h.coin_id];
-    const currentPrice = price(state.coins[h.coin_id].pool);
+    const currentPrice = prices[h.coin_id];
     const value = h.amount * currentPrice;
     return {
       coinId: h.coin_id,
@@ -53,7 +55,9 @@ function buildPortfolioView(state: EngineState, player: PlayerRow, holdingRows: 
     };
   });
 
-  const holdingsValue = holdings.reduce((sum, h) => sum + h.value, 0);
+  // Match the durable rank calculation's addition order at threshold boundaries.
+  const holdingsValue = [...holdings].sort((a, b) => a.coinId < b.coinId ? -1 : a.coinId > b.coinId ? 1 : 0)
+    .reduce((sum, h) => sum + h.value, 0);
   const netWorth = player.usdd_balance + holdingsValue;
   const rank = rankForNetWorth(netWorth);
 
@@ -73,9 +77,11 @@ function buildPortfolioView(state: EngineState, player: PlayerRow, holdingRows: 
 }
 
 export async function computePortfolio(state: EngineState, playerId: string): Promise<PortfolioView> {
-  const player = await getPlayer(playerId);
-  const holdingRows = await getHoldings(playerId);
-  return buildPortfolioView(state, player, holdingRows);
+  const snapshot = await withMarketState(state, () => db.transaction(async tx => ({
+    prices: Object.fromEntries(Object.entries(state.coins).map(([id, cs]) => [id, price(cs.pool)])),
+    player: await getPlayer(playerId, tx), holdings: await getHoldings(playerId, tx),
+  })));
+  return buildPortfolioView(snapshot.prices, snapshot.player, snapshot.holdings);
 }
 
 // One pass over ALL players — 2 DB queries regardless of player count, instead
@@ -85,8 +91,10 @@ export async function computePortfolio(state: EngineState, playerId: string): Pr
 // turn either into an O(players) query storm against PGlite's single
 // embedded connection.
 export async function computeAllPortfolios(state: EngineState): Promise<Map<string, PortfolioView>> {
-  const players = await getAllPlayers();
-  const allHoldings = await getAllHoldings();
+  const { players, allHoldings, prices } = await withMarketState(state, () => db.transaction(async tx => ({
+    prices: Object.fromEntries(Object.entries(state.coins).map(([id, cs]) => [id, price(cs.pool)])),
+    players: await getAllPlayers(tx), allHoldings: await getAllHoldings(tx),
+  })));
   const holdingsByPlayer = new Map<string, HoldingRow[]>();
   for (const h of allHoldings) {
     const list = holdingsByPlayer.get(h.player_id) ?? [];
@@ -95,7 +103,7 @@ export async function computeAllPortfolios(state: EngineState): Promise<Map<stri
   }
   const result = new Map<string, PortfolioView>();
   for (const p of players) {
-    result.set(p.id, buildPortfolioView(state, p, holdingsByPlayer.get(p.id) ?? []));
+    result.set(p.id, buildPortfolioView(prices, p, holdingsByPlayer.get(p.id) ?? []));
   }
   return result;
 }

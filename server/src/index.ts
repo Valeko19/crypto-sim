@@ -20,6 +20,7 @@ import { BOT_POLL_INTERVAL_MS } from './config/tradingBot.js';
 import { checkRankUpRewards } from './engine/rankRewards.js';
 import { maybeRunPlayerResetOnBoot } from './admin/playerReset.js';
 import { persistPoolSnapshots } from './engine/poolPersistence.js';
+import { commitMarketMutation } from './engine/marketValuation.js';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 8787;
 
@@ -56,6 +57,8 @@ async function main() {
     cs.playerOwnedCoins = totalHeld;
   }
 
+  // Reconcile valuation prices with restored/supply-limited pools before serving.
+  await commitMarketMutation(state, () => {});
   const app = express();
   app.use(cors());
   app.use(express.json());

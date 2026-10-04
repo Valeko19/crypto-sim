@@ -1,4 +1,5 @@
 import { db } from '../db/index.js';
+import { recordRankPeaks } from '../db/rankValuation.js';
 import { getQuestProgress, claimQuestRow, getHolding, getHighestLeagueIndex, addEarnedTotal, type EarnedCategory } from '../db/queries.js';
 import { COIN_MAP } from '../config/coins.js';
 import { DAILY_BONUS_AMOUNT, DAILY_VOLUME_REWARD, DAILY_VOLUME_THRESHOLD, EMISSION_THRESHOLDS } from '../config/quests.js';
@@ -64,6 +65,7 @@ export async function claimQuest(playerId: string, questId: unknown): Promise<nu
     await claimQuestRow(tx, playerId, questType, threshold);
     await tx.query('UPDATE players SET usdd_balance = usdd_balance + $1 WHERE id = $2', [reward, playerId]);
     await addEarnedTotal(playerId, category, reward, tx);
+    await recordRankPeaks(tx, playerId);
     return reward;
   });
 }

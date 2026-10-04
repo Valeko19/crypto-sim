@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { db } from '../db/index.js';
 import { EngineState } from './state.js';
 import { Pool, TradeResult, buyWithUsdd, sellCoin, quoteSellExecution, price, isFinitePositiveAmount, limitPoolSupply } from './amm.js';
 import { COIN_MAP, tradeFeePct, MIN_TRADE_USDD } from '../config/coins.js';
@@ -10,7 +9,8 @@ import {
   getTotalHeldForCoin,
 } from '../db/queries.js';
 import { recordTradeVolume } from './dailyVolume.js';
-import { withMarketLock } from './marketLock.js';
+import { marketTransaction, withMarketState } from './marketRecovery.js';
+import { saveValuationPrices, recordRankPeaks } from '../db/rankValuation.js';
 import { calculateBuyCharge } from './buyBudget.js';
 
 export class TradeError extends Error {
@@ -58,7 +58,7 @@ export type ExecutedTradeResult = TradeResponse & { replayed: boolean };
 // and the trading-bot background job — the bot must inherit the exact same
 // fee/slippage/reserve behavior, not a second copy of it.
 export async function executeTrade(state: EngineState, playerId: string, params: TradeParams): Promise<ExecutedTradeResult> {
-  return withPlayerLock(playerId, () => withMarketLock(() => executeTradeUnlocked(state, playerId, params)));
+  return withPlayerLock(playerId, () => withMarketState(state, () => executeTradeUnlocked(state, playerId, params)));
 }
 
 async function executeTradeUnlocked(state: EngineState, playerId: string, params: TradeParams) {
@@ -99,7 +99,7 @@ async function executeTradeUnlocked(state: EngineState, playerId: string, params
   // username, so it can't clobber a real Telegram name with a placeholder.
   await ensurePlayerExists(playerId);
   const requestHash = requestId === undefined ? undefined : hashTradeParams({ coinId, side, amountUsdd, amountCoin, useMax });
-  const outcome = await db.transaction(async tx => {
+  const outcome = await marketTransaction(state, async tx => {
     if (botFiring && !await isCurrentDueBotFiring(tx, playerId, botFiring.scheduledAt)) {
       throw new StaleBotFiringError();
     }
@@ -184,6 +184,8 @@ async function executeTradeUnlocked(state: EngineState, playerId: string, params
     limitPoolSupply(nextPool, freeFloat, nextOwned, cfg.startPrice);
     response.priceAfter = price(nextPool);
     await savePoolSnapshotWithClient(tx, coinId, nextPool.coinReserve, nextPool.usddReserve, nextPool.referencePrice);
+    await saveValuationPrices(tx, state, { coinId, pool: nextPool });
+    await recordRankPeaks(tx);
     if (requestId !== undefined) await saveTradeRequestResponse(tx, playerId, requestId, response);
     if (botFiring) {
       await settleBotFiring(
@@ -196,16 +198,15 @@ async function executeTradeUnlocked(state: EngineState, playerId: string, params
       );
     }
     return { replayed: false as const, response, nextPool, nextOwned, coinDelta, volumeDelta };
-  });
-
-  if (!outcome.replayed) {
+  }, outcome => {
+    if (outcome.replayed) return;
     cs.pool.coinReserve = outcome.nextPool.coinReserve;
     cs.pool.usddReserve = outcome.nextPool.usddReserve;
     if (outcome.nextPool.referencePrice !== undefined) cs.pool.referencePrice = outcome.nextPool.referencePrice;
     else delete cs.pool.referencePrice;
     cs.playerOwnedCoins = outcome.nextOwned;
     recordTradeVolume(playerId, outcome.volumeDelta);
-  }
+  });
   return { ...outcome.response, replayed: outcome.replayed };
 }
 

@@ -1,5 +1,6 @@
 import { EngineState } from './state.js';
 import { executeTrade, StaleBotFiringError } from './trade.js';
+import { MarketUnavailableError } from './marketRecovery.js';
 import { getAllEnabledTradingBots, advanceBotNextRunIfDue, prunePriorBotTradeRequests } from '../db/queries.js';
 
 // Fires enabled bots through the same executeTrade path as manual trades. The
@@ -22,6 +23,7 @@ export async function runTradingBots(state: EngineState): Promise<void> {
       });
       replayed = result.replayed;
     } catch (error) {
+      if (error instanceof MarketUnavailableError) continue;
       if (error instanceof StaleBotFiringError) continue;
       // insufficient balance/holding, coin not found, below MIN_TRADE_USDD, etc.
       // — skip this firing, never let it propagate out of the loop.

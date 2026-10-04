@@ -51,8 +51,8 @@ export async function ensurePlayerExists(id: string): Promise<void> {
   );
 }
 
-export async function getAllPlayers(): Promise<PlayerRow[]> {
-  return (await db.query<PlayerRow>('SELECT * FROM players')).rows;
+export async function getAllPlayers(client: QueryClient = db): Promise<PlayerRow[]> {
+  return (await client.query<PlayerRow>('SELECT * FROM players')).rows;
 }
 
 export async function getPlayer(id: string, client: QueryClient = db): Promise<PlayerRow> {
@@ -60,13 +60,13 @@ export async function getPlayer(id: string, client: QueryClient = db): Promise<P
   return res.rows[0];
 }
 
-export async function getHoldings(playerId: string): Promise<HoldingRow[]> {
-  const res = await db.query<HoldingRow>('SELECT * FROM player_holdings WHERE player_id = $1', [playerId]);
+export async function getHoldings(playerId: string, client: QueryClient = db): Promise<HoldingRow[]> {
+  const res = await client.query<HoldingRow>('SELECT * FROM player_holdings WHERE player_id = $1', [playerId]);
   return res.rows;
 }
 
-export async function getAllHoldings(): Promise<HoldingRow[]> {
-  return (await db.query<HoldingRow>('SELECT * FROM player_holdings')).rows;
+export async function getAllHoldings(client: QueryClient = db): Promise<HoldingRow[]> {
+  return (await client.query<HoldingRow>('SELECT * FROM player_holdings')).rows;
 }
 
 export async function getHolding(playerId: string, coinId: string, client: QueryClient = db): Promise<HoldingRow | null> {
@@ -273,8 +273,8 @@ export interface EarnedTotals {
   rank: number;
 }
 
-export async function getEarnedTotals(playerId: string): Promise<EarnedTotals> {
-  const res = await db.query<{ daily_earned_total: number; emission_earned_total: number; rank_earned_total: number }>(
+export async function getEarnedTotals(playerId: string, client: QueryClient = db): Promise<EarnedTotals> {
+  const res = await client.query<{ daily_earned_total: number; emission_earned_total: number; rank_earned_total: number }>(
     'SELECT daily_earned_total, emission_earned_total, rank_earned_total FROM player_earned_totals WHERE player_id = $1',
     [playerId]
   );
@@ -601,7 +601,7 @@ export async function getHighestLeagueIndex(playerId: string, client: QueryClien
 export async function setHighestLeagueIndex(playerId: string, index: number): Promise<void> {
   await db.query(
     `INSERT INTO player_rank_progress (player_id, highest_league_index) VALUES ($1, $2)
-     ON CONFLICT (player_id) DO UPDATE SET highest_league_index = $2`,
+     ON CONFLICT (player_id) DO UPDATE SET highest_league_index = GREATEST(player_rank_progress.highest_league_index, EXCLUDED.highest_league_index)`,
     [playerId, index]
   );
 }

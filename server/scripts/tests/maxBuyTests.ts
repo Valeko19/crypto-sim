@@ -12,6 +12,7 @@ const { ensurePlayer, getPlayer, getHolding } = await import('../../src/db/queri
 const { createAuthSession } = await import('../../src/auth/sessions.js');
 const { createRouter } = await import('../../src/api/routes.js');
 const { createInitialState } = await import('../../src/engine/state.js');
+const { persistPoolSnapshots } = await import('../../src/engine/poolPersistence.js');
 const { COINS, tradeFeePct, MIN_TRADE_USDD } = await import('../../src/config/coins.js');
 const state = createInitialState();
 const app = express();
@@ -35,6 +36,7 @@ async function fixture(balance: number, coinId = 'btcr', capped = false) {
   await ensurePlayer(id, id);
   await db.query('UPDATE players SET usdd_balance = $1 WHERE id = $2', [balance, id]);
   const { sessionToken: token } = await createAuthSession(id);
+  await persistPoolSnapshots(state);
   return { id, token, coinId };
 }
 

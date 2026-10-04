@@ -61,6 +61,7 @@ async function fixture(share: number) {
     held.set(cfg.id, amount);
     await db.query('INSERT INTO player_holdings(player_id, coin_id, amount, avg_buy_price) VALUES ($1,$2,$3,$4)', [id, cfg.id, amount, cfg.startPrice]);
   }
+  await persistPoolSnapshots(state);
 }
 function ticks(count: number) { for (let i = 0; i < count; i++) { tick(state); check(); } }
 
@@ -100,6 +101,7 @@ try {
   await run('all coins: the last representable supply is not rounded into extra holdings', async () => {
     await fixture(1 - Number.EPSILON);
     ticks(1000);
+    await persistPoolSnapshots(state);
     for (const cfg of COINS) {
       const before = await getPlayer(id);
       try {
@@ -113,6 +115,7 @@ try {
   await run('all coins: exhausted pools retain finite prices through 5000 ticks and reject BUY', async () => {
     await fixture(1);
     ticks(5000);
+    await persistPoolSnapshots(state);
     for (const cfg of COINS) {
       const pool = state.coins[cfg.id].pool;
       assert.equal(pool.coinReserve, 0); assert.equal(pool.usddReserve, 0);
@@ -231,6 +234,8 @@ try {
       const x = maxTradeableReserve(free(cfg), cs.playerOwnedCoins);
       cs.pool = {coinReserve:x, usddReserve:x * cfg.startPrice};
       for (let i = 0; i < 1000; i++) {
+        // The production tick publishes a durable market before another trade.
+        await persistPoolSnapshots(state);
         const player = ids[i % 2];
         const before = await getHolding(player, cfg.id);
         try { await executeTrade(state, player, {coinId:cfg.id, side:'buy', useMax:true}); }

@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Request, type Response, type RequestHandler } from 'express';
 import { EngineState, recentChangePct } from '../engine/state.js';
 import { quoteBuyExecution, quoteSellExecution, isFinitePositiveAmount, price } from '../engine/amm.js';
 import { executeTrade, TradeError } from '../engine/trade.js';
@@ -28,13 +28,33 @@ import {
   getEarnedTotals,
 } from '../db/queries.js';
 import { computePortfolio, computeLeaderboard, findEmissionLeader, computeStaking } from './helpers.js';
+import { creditBalance, commitMarketMutation } from '../engine/marketValuation.js';
+import { MarketUnavailableError, ensureMarketReady, withMarketState } from '../engine/marketRecovery.js';
 import { STAKING_FLEXIBLE_COOLDOWN_MS, STAKING_FLEXIBLE_APR } from '../config/staking.js';
-import { withMarketLock } from '../engine/marketLock.js';
+
+// Recovery can fail after admission while a handler waits for the market lock.
+// Express 4 does not forward rejected async handlers automatically.
+function marketHandler(work: (req: Request, res: Response) => Promise<unknown>): RequestHandler {
+  return (req, res, next) => {
+    void work(req, res).catch(error => {
+      if (error instanceof MarketUnavailableError) res.status(503).json({ error: error.message });
+      else next(error);
+    });
+  };
+}
 
 export function createRouter(state: EngineState) {
   const router = Router();
 
   router.use(resolvePlayer);
+  // Avoid serving stale quotes/portfolios while a market recovery is pending.
+  router.use(async (_req, res, next) => {
+    try { await ensureMarketReady(state); next(); }
+    catch (error) {
+      if (error instanceof MarketUnavailableError) return res.status(503).json({ error: error.message });
+      next(error);
+    }
+  });
 
   router.get('/coins', (req, res) => {
     const list = COINS.map(cfg => {
@@ -76,7 +96,7 @@ export function createRouter(state: EngineState) {
     res.json({ candles: aggregateCandles(candles, timeframeParam) });
   });
 
-  router.post('/trade/quote', async (req, res) => {
+  router.post('/trade/quote', marketHandler((req, res) => withMarketState(state, async () => {
     const { coinId, side, amountUsdd, amountCoin, useMax } = req.body;
     const cs = state.coins[coinId];
     if (!cs) return res.status(404).json({ error: 'coin not found' });
@@ -148,7 +168,7 @@ export function createRouter(state: EngineState) {
     } catch {
       return res.status(400).json({ error: 'quote failed' });
     }
-  });
+  })));
 
   router.post('/trade', async (req, res) => {
     const { coinId, side, amountUsdd, amountCoin, useMax, requestId } = req.body;
@@ -160,15 +180,15 @@ export function createRouter(state: EngineState) {
       const { replayed: _replayed, ...response } = result;
       res.json(response);
     } catch (e) {
-      const status = e instanceof TradeError ? e.status : 400;
+      const status = e instanceof MarketUnavailableError ? 503 : e instanceof TradeError ? e.status : 400;
       res.status(status).json({ error: e instanceof Error ? e.message : 'trade failed' });
     }
   });
 
-  router.get('/portfolio', async (req, res) => {
+  router.get('/portfolio', marketHandler(async (req, res) => {
     const portfolio = await computePortfolio(state, req.playerId);
     res.json(portfolio);
-  });
+  }));
 
   router.get('/staking', async (req, res) => {
     const coins = await computeStaking(state, req.playerId);
@@ -228,8 +248,7 @@ export function createRouter(state: EngineState) {
     const paidRewards = await withdrawStakingPosition(positionId, req.playerId);
     if (paidRewards === null) return res.status(404).json({ error: 'position already withdrawn' });
     if (paidRewards > 0) {
-      const { db } = await import('../db/index.js');
-      await db.query('UPDATE players SET usdd_balance = usdd_balance + $1 WHERE id = $2', [paidRewards, req.playerId]);
+      await creditBalance(req.playerId, paidRewards);
     }
     res.json({ success: true });
   });
@@ -257,15 +276,19 @@ export function createRouter(state: EngineState) {
     if (!COIN_MAP[coinId]) return res.status(404).json({ error: 'coin not found' });
     const amount = await claimFlexibleCoinRewards(req.playerId, coinId);
     if (amount > 0) {
-      const { db } = await import('../db/index.js');
-      await db.query('UPDATE players SET usdd_balance = usdd_balance + $1 WHERE id = $2', [amount, req.playerId]);
+      await creditBalance(req.playerId, amount);
     }
     res.json({ success: true, amount });
   });
 
-  router.get('/quests', async (req, res) => {
+  router.get('/quests', marketHandler(async (req, res) => {
     const portfolio = await computePortfolio(state, req.playerId);
-    const progress = await getQuestProgress(req.playerId);
+    const { db } = await import('../db/index.js');
+    const { progress, highestLeagueIndex, earned } = await db.transaction(async tx => ({
+      progress: await getQuestProgress(req.playerId, tx),
+      highestLeagueIndex: await getHighestLeagueIndex(req.playerId, tx),
+      earned: await getEarnedTotals(req.playerId, tx),
+    }));
 
     const dailyRow = progress.find(p => p.quest_type === 'daily_bonus');
     const dailyClaimedAt = dailyRow?.claimed_at ? new Date(dailyRow.claimed_at) : null;
@@ -301,7 +324,6 @@ export function createRouter(state: EngineState) {
     // claimed is tracked the same way as emission_capture, via quest_progress
     // with quest_type='rank_reward' and threshold repurposed to hold the rank
     // index (coin_id unused, stored as 'none').
-    const highestLeagueIndex = await getHighestLeagueIndex(req.playerId);
     const rankLadder = RANKS.slice(1).map((r, i) => {
       const rankIndex = i + 1; // RANKS[0] (Планктон) is skipped — starting rank, no reward
       const claimed = progress.some(
@@ -316,7 +338,6 @@ export function createRouter(state: EngineState) {
       };
     });
 
-    const earned = await getEarnedTotals(req.playerId);
 
     res.json({
       dailyBonus: { amount: DAILY_BONUS_AMOUNT, available: dailyAvailable, claimedAt: dailyRow?.claimed_at ?? null },
@@ -339,7 +360,7 @@ export function createRouter(state: EngineState) {
       rankRewards: { ladder: rankLadder },
       rankEarnedTotal: earned.rank,
     });
-  });
+  }));
 
   router.post('/quests/claim', async (req, res) => {
     try {
@@ -426,12 +447,12 @@ export function createRouter(state: EngineState) {
     res.json({ success: true });
   });
 
-  router.get('/leaderboard', async (req, res) => {
+  router.get('/leaderboard', marketHandler(async (req, res) => {
     const league = String(req.query.league ?? RANKS[0].name);
     if (!RANKS.some(r => r.name === league)) return res.status(400).json({ error: 'unknown league' });
     const result = await computeLeaderboard(state, league, req.playerId);
     res.json({ league, ...result });
-  });
+  }));
 
   router.get('/ranks', (req, res) => {
     res.json({ ranks: RANKS.map(r => ({ name: r.name, min: r.min, max: Number.isFinite(r.max) ? r.max : null })) });
@@ -488,18 +509,16 @@ export function createRouter(state: EngineState) {
     });
   });
 
-  // Runs the simulation forward synchronously instead of at the real
-  // 1-tick/second pace — tick() is pure in-memory math (see engine/tick.ts),
-  // so a tight loop of it is cheap and lets pre-beta test scripts observe
-  // hours of simulated market behavior (macro phases, gravity, drift) in a
-  // couple of seconds instead of actually waiting real wall-clock hours.
+  // Advances logical ticks without the real 1-second delay. Each step now
+  // persists genuine rank crossings too. Release the market lock between
+  // steps so a long QA simulation cannot starve live trading/portfolio reads.
   // Bypasses the normal per-tick WS broadcast entirely — connected dev
   // clients just see time jump when this returns. Same "safe dev
   // environment" gate as the routes above.
-  router.post('/debug/fast-forward', async (req, res) => {
+  router.post('/debug/fast-forward', marketHandler(async (req, res) => {
     if (!DEV_AUTH_ALLOWED) return res.status(403).json({ error: 'not available' });
     const ticks = Math.min(Math.max(Math.floor(Number(req.body?.ticks) || 0), 0), 300_000);
-    const result = await withMarketLock(() => {
+    const result = await (async () => {
       const priceStats: Record<string, { min: number; max: number }> = {};
       for (const cfg of COINS) {
         const p = price(state.coins[cfg.id].pool);
@@ -509,7 +528,7 @@ export function createRouter(state: EngineState) {
         { phase: state.macroPhase, atTick: state.tickCount, btcrPrice: price(state.coins['btcr'].pool) },
       ];
       for (let i = 0; i < ticks; i++) {
-        tick(state);
+        await commitMarketMutation(state, tick);
         for (const cfg of COINS) {
           const p = price(state.coins[cfg.id].pool);
           const s = priceStats[cfg.id];
@@ -521,9 +540,9 @@ export function createRouter(state: EngineState) {
         }
       }
       return { ticksRun: ticks, tickCount: state.tickCount, macroPhase: state.macroPhase, priceStats, phaseLog };
-    });
+    })();
     res.json(result);
-  });
+  }));
 
   // Raw pool reserves — lets a test independently re-derive the
   // constant-product math (x*y=k) by hand instead of trusting the same
@@ -548,13 +567,13 @@ export function createRouter(state: EngineState) {
   // snapshotted to disk every 10s and resumed on restart — without this,
   // each test run would leave a one-way-ratcheting mark on the shared dev
   // market).
-  router.post('/debug/restore-pools', async (req, res) => {
+  router.post('/debug/restore-pools', marketHandler(async (req, res) => {
     if (!DEV_AUTH_ALLOWED) return res.status(403).json({ error: 'not available' });
     const pools = req.body?.pools as Record<string, { coinReserve: number; usddReserve: number; playerOwnedCoins?: number }> | undefined;
     if (!pools) return res.status(400).json({ error: 'missing pools' });
-    await withMarketLock(() => {
+    await commitMarketMutation(state, draft => {
       for (const [coinId, reserves] of Object.entries(pools)) {
-        const cs = state.coins[coinId];
+        const cs = draft.coins[coinId];
         if (!cs || !reserves) continue;
         cs.pool.coinReserve = reserves.coinReserve;
         cs.pool.usddReserve = reserves.usddReserve;
@@ -562,7 +581,7 @@ export function createRouter(state: EngineState) {
       }
     });
     res.json({ success: true });
-  });
+  }));
 
   // Credits the calling dev player directly, bypassing the shop/daily-limit
   // entirely, so market-moving tests (large emission capture, concurrent
@@ -572,12 +591,8 @@ export function createRouter(state: EngineState) {
     if (!DEV_AUTH_ALLOWED) return res.status(403).json({ error: 'not available' });
     const amount = Number(req.body?.amount);
     if (!amount || amount <= 0) return res.status(400).json({ error: 'invalid amount' });
-    const { db } = await import('../db/index.js');
-    const result = await db.query<{ usdd_balance: number }>(
-      'UPDATE players SET usdd_balance = usdd_balance + $1 WHERE id = $2 RETURNING usdd_balance',
-      [amount, req.playerId]
-    );
-    res.json({ success: true, newBalance: result.rows[0]?.usdd_balance ?? null });
+    const newBalance = await creditBalance(req.playerId, amount);
+    res.json({ success: true, newBalance });
   });
 
   return router;
@@ -586,6 +601,5 @@ export function createRouter(state: EngineState) {
 // STUB: real Telegram Stars Invoice API integration point. Today this simply
 // credits the player's balance; swap the body for a real charge + webhook confirm.
 async function processStarPayment(playerId: string, starsAmount: number, usddAmount: number): Promise<void> {
-  const { db } = await import('../db/index.js');
-  await db.query('UPDATE players SET usdd_balance = usdd_balance + $1 WHERE id = $2', [usddAmount, playerId]);
+  await creditBalance(playerId, usddAmount);
 }
