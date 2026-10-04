@@ -12,6 +12,8 @@ import { COINS } from '../src/config/coins.js';
 const BASE = process.env.TEST_SERVER_URL ?? 'http://localhost:8787';
 
 async function main() {
+  if (process.env.NODE_ENV === 'production') throw new Error('Dev-only pool restore is not a Full Game Reset. Use reset:game offline.');
+  console.warn('DEPRECATED for beta reset: this dev helper preserves holdings. Use reset:game for a clean game.');
   const pools: Record<string, { coinReserve: number; usddReserve: number; playerOwnedCoins: number }> = {};
   for (const cfg of COINS) {
     const coinReserve = cfg.emission * (1 - cfg.npcLockedPct);

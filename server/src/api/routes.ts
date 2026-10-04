@@ -1,4 +1,5 @@
 import { Router, type Request, type Response, type RequestHandler } from 'express';
+import { getGameEpoch } from '../db/gameEpoch.js';
 import { EngineState, recentChangePct } from '../engine/state.js';
 import { quoteBuyExecution, quoteSellExecution, isFinitePositiveAmount, price } from '../engine/amm.js';
 import { executeTrade, TradeError } from '../engine/trade.js';
@@ -48,6 +49,18 @@ export function createRouter(state: EngineState) {
   const router = Router();
 
   router.use(resolvePlayer);
+  // Reset is offline: no engine/request can survive the administrative process.
+  // Guard every mutation, including quests/staking/shop/bots/debug endpoints.
+  router.use((req, res, next) => {
+    if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
+    void getGameEpoch().then(epoch => {
+      const supplied = req.header('X-Game-Epoch');
+      // Compatibility only before the FIRST full reset. After it, omission is stale.
+      if (supplied !== epoch && !(epoch === '0' && supplied === undefined)) {
+        res.status(409).json({ error: 'Game was reset. Reopen the Mini App and create a new action.', code: 'STALE_GAME_EPOCH' });
+      } else next();
+    }).catch(next);
+  });
   // Avoid serving stale quotes/portfolios while a market recovery is pending.
   router.use(async (_req, res, next) => {
     try { await ensureMarketReady(state); next(); }

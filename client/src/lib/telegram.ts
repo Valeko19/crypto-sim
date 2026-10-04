@@ -11,6 +11,22 @@ export interface AuthContext { readonly generation: number; readonly identity: I
 interface Session { telegramUserId: string; token: string }
 let context: AuthContext = { generation: 0, identity: null };
 let session: Session | null = null;
+let gameEpoch: string | null = null;
+export function captureGameEpoch() { return gameEpoch; }
+function acceptGameEpoch(value: unknown) {
+  // Epoch 0 is the pre-reset compatibility epoch for older server versions.
+  const next = typeof value === 'string' ? value : '0';
+  const changed = gameEpoch !== null && gameEpoch !== next;
+  gameEpoch = next;
+  if (changed) {
+    context = { ...context, generation: context.generation + 1 };
+    inFlight = null;
+    for (const controller of requests) controller.abort();
+    requests.clear();
+    for (const listener of listeners) listener();
+    for (const listener of snapshotListeners) listener();
+  }
+}
 let inFlight: { context: AuthContext; promise: Promise<string> } | null = null;
 let devId: string | null = null;
 let lastInitData: string | undefined;
@@ -142,6 +158,7 @@ async function restoreOrBootstrap(expected: AuthContext): Promise<string> {
         assertAuthContext(expected);
         if (confirmedOwner(owner, expected)) {
           session = cached;
+          acceptGameEpoch(owner.gameEpoch);
           for (const listener of snapshotListeners) listener();
           return cached.token;
         }
@@ -161,6 +178,7 @@ async function restoreOrBootstrap(expected: AuthContext): Promise<string> {
     assertAuthContext(expected);
     if (!confirmedOwner(result, expected) || typeof result.sessionToken !== 'string') throw new Error('Invalid authentication response');
     session = { telegramUserId: result.telegramUserId, token: result.sessionToken };
+    acceptGameEpoch(result.gameEpoch);
     try { sessionStorage.setItem(SESSION_KEY, JSON.stringify(session)); } catch { /* memory only */ }
     for (const listener of snapshotListeners) listener();
     return session.token;
@@ -178,10 +196,18 @@ function getOrBootstrapSession(expected: AuthContext): Promise<string> {
 }
 export async function getIdentityHeaders(expected = captureAuthContext()): Promise<Record<string, string>> {
   assertAuthContext(expected);
-  if (expected.identity?.kind === 'dev') return { 'X-Dev-Player-Id': expected.identity.id };
+  if (expected.identity?.kind === 'dev') {
+    const response = await fetch(`${API_BASE}/api/auth/epoch`);
+    if (!response.ok) throw new Error('Could not load game epoch');
+    const body = await response.json();
+    assertAuthContext(expected);
+    acceptGameEpoch(body.gameEpoch);
+    assertAuthContext(expected);
+    return { 'X-Dev-Player-Id': expected.identity.id, 'X-Game-Epoch': gameEpoch! };
+  }
   const token = await getOrBootstrapSession(expected);
   assertAuthContext(expected);
-  return { 'X-Session-Token': token };
+  return { 'X-Session-Token': token, 'X-Game-Epoch': gameEpoch ?? '0' };
 }
 export async function refreshIdentityHeaders(expiredToken: string, expected = captureAuthContext()): Promise<Record<string, string>> {
   assertAuthContext(expected);

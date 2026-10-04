@@ -24,7 +24,8 @@ const A = 910001, B = 910002;
 const sessionKey = 'crypto_sim_session_v2';
 const sourceRoot = fileURLToPath(new URL('../../../client/src/', import.meta.url));
 const app = express(); app.use(express.json());
-app.use('/api/auth', createAuthRouter()); app.use('/api', createRouter(createInitialState()));
+const state = createInitialState();
+app.use('/api/auth', createAuthRouter()); app.use('/api', createRouter(state));
 const server = createServer(app), hub = createWsServer(server);
 let base = '', passed = 0;
 const nativeFetch = globalThis.fetch;
@@ -250,7 +251,7 @@ try {
   await run('missing/malformed identity never sends a cached Telegram token; dev remains separate',async()=>{
     const a=browser();await a.auth.getIdentityHeaders();const b=browser(null,a.storage);await assert.rejects(b.auth.getIdentityHeaders());assert.equal(b.calls.length,0);
     b.window.Telegram.WebApp.initData='user=invalid';await assert.rejects(b.auth.getIdentityHeaders());assert.equal(b.calls.length,0);
-    const dev=browser(null,a.storage,true);assert.ok((await dev.auth.getIdentityHeaders())['X-Dev-Player-Id'].startsWith('dev_'));assert.equal(dev.calls.length,0);
+    const dev=browser(null,a.storage,true);assert.ok((await dev.auth.getIdentityHeaders())['X-Dev-Player-Id'].startsWith('dev_'));assert.equal(dev.calls.length,1);assert.ok(dev.calls[0].url.endsWith('/auth/epoch'));
   });
   await run('blocked sessionStorage supports memory-only login and safe switching',async()=>{
     const b=browser();for(const key of ['getItem','setItem','removeItem'])b.sandbox.sessionStorage[key]=()=>{throw new Error('blocked');};
@@ -277,6 +278,31 @@ try {
       await hub.sendToPlayer(`tg_${A}`,'portfolio_updates',{username:'A'});await hub.sendToPlayer(`tg_${B}`,'portfolio_updates',{username:'B'});
       await until(()=>messages.some(m=>m.type==='portfolio_updates'));assert.ok(messages.filter(m=>m.type==='portfolio_updates').every(m=>m.payload.username==='B'));
     } finally {socket.terminate();}
+  });
+  await run('reset epoch: pending mutation/401/new bootstrap cannot replay old intent; WS state is cleared',async()=>{
+    const {applyFullReset}=await import('../../src/admin/fullGameReset.js');
+    const entered=deferred<void>(),release=deferred<void>();let held=false;
+    const b=browser(A,new Map(),false,async(url,_opts,next)=>{
+      if(url.endsWith('/trade')&&!held){held=true;entered.resolve();await release.promise;}return next();
+    });
+    await b.auth.getIdentityHeaders();
+    const ws=b.load('lib/wsStore.ts');
+    ws.ensureWsStarted();await until(()=>b.sockets.length===1);
+    b.sockets[0].open();b.sockets[0].frame('portfolio_updates',{usddBalance:777});
+    assert.equal(ws.getSnapshot().portfolio.usddBalance,777);
+    const old=b.api.trade({coinId:'btcr',side:'buy',amountUsdd:10});const rejected=assert.rejects(old);await entered.promise;
+    await applyFullReset(db,'client-epoch-regression');
+    release.resolve();await rejected;
+    assert.equal((await getPlayer(`tg_${A}`)).usdd_balance,100);
+    assert.equal((await getPlayer(`tg_${A}`)).trades_count,0);
+    assert.equal(b.calls.filter(c=>c.url.endsWith('/trade')).length,1);
+    assert.equal(ws.getSnapshot().portfolio,null);
+    const headers=await b.auth.getIdentityHeaders();assert.notEqual(headers['X-Game-Epoch'],'0');
+    // The test server must restore live pools like a real offline restart.
+    const {commitMarketMutation}=await import('../../src/engine/marketValuation.js');
+    Object.assign(state,createInitialState());await commitMarketMutation(state,()=>{});
+    await b.api.trade({coinId:'btcr',side:'buy',amountUsdd:10});
+    assert.equal((await getPlayer(`tg_${A}`)).usdd_balance,90);
   });
   console.log(`ACCOUNT ISOLATION TESTS: ${passed} passed`);
 } finally {for(const ws of hub.wss.clients)ws.terminate();await new Promise<void>(r=>hub.wss.close(()=>r()));await new Promise<void>(r=>server.close(()=>r()));await db.close();}

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { getGameEpoch } from '../db/gameEpoch.js';
 import { getPlayer, ensurePlayer } from '../db/queries.js';
 import { isBetaAllowed, BETA_DENIED_MESSAGE } from '../auth/beta.js';
 import { resolveIdentity } from '../auth/telegram.js';
@@ -7,11 +8,14 @@ import { createAuthSession, resolveAuthSession } from '../auth/sessions.js';
 export function createAuthRouter() {
   const router = Router();
   router.use((_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
+  router.get('/epoch', (_req, res, next) => {
+    void getGameEpoch().then(gameEpoch => res.json({ gameEpoch })).catch(next);
+  });
   router.get('/session', async (req, res) => {
     const token = req.header('X-Session-Token');
     const identity = token ? await resolveAuthSession(token) : null;
     if (!identity || !identity.playerId.startsWith('tg_')) return res.status(401).json({ error: 'unauthorized' });
-    res.json({ playerId: identity.playerId, telegramUserId: identity.playerId.slice(3) });
+    res.json({ playerId: identity.playerId, telegramUserId: identity.playerId.slice(3), gameEpoch: await getGameEpoch() });
   });
 
   router.post('/bootstrap', async (req, res) => {
@@ -28,7 +32,7 @@ export function createAuthRouter() {
 
     await ensurePlayer(identity.playerId, identity.username);
     const session = await createAuthSession(identity.playerId);
-    res.json({ ...session, playerId: identity.playerId, telegramUserId: identity.playerId.slice(3) });
+    res.json({ ...session, playerId: identity.playerId, telegramUserId: identity.playerId.slice(3), gameEpoch: await getGameEpoch() });
   });
 
   return router;

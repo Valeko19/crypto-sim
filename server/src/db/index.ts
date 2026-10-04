@@ -17,6 +17,10 @@ export const db = new PGlite(dataDir, { initialMemory: 128 * 1024 * 1024 });
 
 export async function initDb() {
   await db.exec(`
+    CREATE TABLE IF NOT EXISTS game_epoch (
+      singleton BOOLEAN PRIMARY KEY CHECK (singleton), epoch TEXT NOT NULL
+    );
+    INSERT INTO game_epoch VALUES (TRUE, '0') ON CONFLICT DO NOTHING;
     CREATE TABLE IF NOT EXISTS players (
       id TEXT PRIMARY KEY,
       username TEXT NOT NULL,

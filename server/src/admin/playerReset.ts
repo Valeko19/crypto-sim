@@ -4,6 +4,7 @@ import { db } from '../db/index.js';
 // (scripts/reset-players.ts) and the boot-time env-var-gated path below.
 // See scripts/reset-players.ts for exactly what is and isn't touched.
 export async function resetAllPlayers(): Promise<number> {
+  if (process.env.NODE_ENV === 'production') throw new Error('Legacy reset disabled in production; use offline reset:game');
   const players = await db.query('SELECT id FROM players');
   await db.query('DELETE FROM player_holdings');
   await db.query('DELETE FROM player_daily_volume');

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { STARTING_USDD } from '../config/player.js';
 import type { PGliteInterface } from '@electric-sql/pglite';
 import { db } from './index.js';
 import { holdingsUpperBound } from '../engine/supply.js';
@@ -28,12 +29,11 @@ export interface HoldingRow {
 // renamed themselves in Telegram since their last visit (previously it was
 // only ever written on INSERT and never touched again).
 export async function ensurePlayer(id: string, username: string): Promise<PlayerRow> {
-  const STARTING_BONUS = 100;
   const res = await db.query<PlayerRow>(
     `INSERT INTO players (id, username, usdd_balance) VALUES ($1, $2, $3)
      ON CONFLICT (id) DO UPDATE SET username = $2
      RETURNING *`,
-    [id, username, STARTING_BONUS]
+    [id, username, STARTING_USDD]
   );
   return res.rows[0];
 }
@@ -45,9 +45,9 @@ export async function ensurePlayer(id: string, username: string): Promise<Player
 // real username is actually known (REST middleware, WS auth handshake).
 export async function ensurePlayerExists(id: string): Promise<void> {
   await db.query(
-    `INSERT INTO players (id, username, usdd_balance) VALUES ($1, $1, 100)
+    `INSERT INTO players (id, username, usdd_balance) VALUES ($1, $1, $2)
      ON CONFLICT (id) DO NOTHING`,
-    [id]
+    [id, STARTING_USDD]
   );
 }
 

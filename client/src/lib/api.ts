@@ -1,4 +1,4 @@
-import { getIdentityHeaders, refreshIdentityHeaders, captureAuthContext, assertAuthContext, authRequest } from './telegram';
+import { getIdentityHeaders, refreshIdentityHeaders, captureAuthContext, assertAuthContext, authRequest, captureGameEpoch } from './telegram';
 
 export interface CoinListItem {
   id: string;
@@ -124,21 +124,29 @@ export const API_BASE = import.meta.env.VITE_API_BASE ?? '';
 
 async function req<T>(path: string, options?: RequestInit): Promise<T> {
   const context = captureAuthContext();
+  const mutation = !['GET','HEAD','OPTIONS'].includes(options?.method ?? 'GET');
+  const intentEpoch = captureGameEpoch();
   const identityHeaders = await getIdentityHeaders(context);
+  if (mutation && intentEpoch === null && identityHeaders['X-Game-Epoch'] !== '0') {
+    throw new Error('Game was reset. Please create a new action.');
+  }
+  // Capture intent before any async auth/reconnect. Never upgrade an old body
+  // to a new epoch when retrying with a freshly bootstrapped bearer.
+  const epochHeaders: Record<string, string> = mutation ? { 'X-Game-Epoch': intentEpoch ?? '0' } : {};
   const request = authRequest(context);
   try {
     const url = `${API_BASE}/api${path}`;
     const requestOptions: RequestInit = {
       ...options,
       signal: request.signal,
-      headers: { 'Content-Type': 'application/json', ...identityHeaders, ...options?.headers },
+      headers: { 'Content-Type': 'application/json', ...identityHeaders, ...options?.headers, ...epochHeaders },
     };
     let res = await fetch(url, requestOptions);
     assertAuthContext(context);
     const sessionToken = identityHeaders['X-Session-Token'];
     if (res.status === 401 && sessionToken) {
       const refreshedHeaders = await refreshIdentityHeaders(sessionToken, context);
-      requestOptions.headers = { 'Content-Type': 'application/json', ...refreshedHeaders, ...options?.headers };
+      requestOptions.headers = { 'Content-Type': 'application/json', ...refreshedHeaders, ...options?.headers, ...epochHeaders };
       res = await fetch(url, requestOptions);
       assertAuthContext(context);
     }

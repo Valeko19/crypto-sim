@@ -44,10 +44,12 @@
 //     for why
 //
 // Safety: requires an explicit --yes flag so it can never run by accident.
+// DEPRECATED for beta: use reset:game in offline maintenance mode.
 import { initDb } from '../src/db/index.js';
 import { resetAllPlayers } from '../src/admin/playerReset.js';
 
 async function main() {
+  if (process.env.NODE_ENV === 'production') throw new Error('Legacy player reset is disabled in production. Use reset:game.');
   if (!process.argv.includes('--yes')) {
     console.error(
       'This PERMANENTLY wipes progress for ALL existing players: balance -> $100, ' +
