@@ -10,6 +10,7 @@
     "test:beta": "tsx scripts/tests/index.ts",
     "test:numeric": "tsx scripts/tests/numericValidationTests.ts",
     "test:atomic": "tsx scripts/tests/atomicTradeTests.ts",
+    "test:bot-api": "tsx scripts/tests/botApiValidationTests.ts",
     "test:auth": "tsx scripts/tests/authSessionTests.ts",
     "test:accounts": "tsx scripts/tests/accountIsolationTests.ts",
     "test:quests": "tsx scripts/tests/questRewardTests.ts",

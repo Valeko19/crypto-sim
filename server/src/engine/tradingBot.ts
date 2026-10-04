@@ -1,6 +1,8 @@
 import { EngineState } from './state.js';
 import { executeTrade, StaleBotFiringError } from './trade.js';
 import { MarketUnavailableError } from './marketRecovery.js';
+import { COIN_MAP } from '../config/coins.js';
+import { MIN_BOT_INTERVAL_MS } from '../config/tradingBot.js';
 import { getAllEnabledTradingBots, advanceBotNextRunIfDue, prunePriorBotTradeRequests } from '../db/queries.js';
 
 // Fires enabled bots through the same executeTrade path as manual trades. The
@@ -9,6 +11,15 @@ export async function runTradingBots(state: EngineState): Promise<void> {
   const bots = await getAllEnabledTradingBots();
   const now = Date.now();
   for (const bot of bots) {
+    // Older API versions could persist malformed config. Leave it replaceable
+    // through /bot/config, but never execute or reschedule invalid rows.
+    // Legacy finite intervals need not match the new UI-only input whitelist.
+    if (typeof bot.coin_id !== 'string' || !Object.prototype.hasOwnProperty.call(COIN_MAP, bot.coin_id)
+      || (bot.side !== 'buy' && bot.side !== 'sell')
+      || typeof bot.amount !== 'number' || !Number.isFinite(bot.amount) || bot.amount <= 0
+      || typeof bot.interval_ms !== 'number' || !Number.isSafeInteger(bot.interval_ms)
+      || bot.interval_ms < MIN_BOT_INTERVAL_MS || !Number.isFinite(new Date(now + bot.interval_ms).getTime())
+      || !Number.isFinite(new Date(bot.next_run_at!).getTime())) continue;
     if (!bot.next_run_at || new Date(bot.next_run_at).getTime() > now) continue;
     const scheduledAt = new Date(bot.next_run_at).toISOString();
     const requestId = `bot:${scheduledAt}`;

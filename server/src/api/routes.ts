@@ -15,7 +15,7 @@ import { RANKS, RANK_UP_REWARDS } from '../config/ranks.js';
 import { DAILY_BONUS_AMOUNT, EMISSION_THRESHOLDS, DAILY_VOLUME_THRESHOLD, DAILY_VOLUME_REWARD } from '../config/quests.js';
 import { dailyVolumeProgress } from '../engine/dailyVolume.js';
 import { SHOP_PACKAGES, STARS_TO_USDD_RATE, DAILY_LIMIT_USDD } from '../config/shop.js';
-import { MIN_BOT_INTERVAL_MS } from '../config/tradingBot.js';
+import { BOT_CONFIG_INTERVALS_MS } from '../config/tradingBot.js';
 import { remainingToday, recordSpend } from './shopState.js';
 import { resolvePlayer } from './middleware.js';
 import { DEV_AUTH_ALLOWED } from '../auth/telegram.js';
@@ -407,7 +407,7 @@ export function createRouter(state: EngineState) {
   });
 
   // The trading bot is available to every player with no purchase step.
-  router.get('/bot', async (req, res) => {
+  router.get('/bot', marketHandler(async (req, res) => {
     const bot = await getTradingBot(req.playerId);
     res.json({
       config: bot && bot.coin_id ? {
@@ -421,31 +421,37 @@ export function createRouter(state: EngineState) {
         runTotalCoins: bot.run_total_coins,
       } : null,
     });
-  });
+  }));
 
-  router.post('/bot/config', async (req, res) => {
-    const { coinId, side, intervalMs, amount } = req.body as {
-      coinId: string; side: 'buy' | 'sell'; intervalMs: number; amount: number;
-    };
-    if (!COIN_MAP[coinId]) return res.status(404).json({ error: 'coin not found' });
-    if (side !== 'buy' && side !== 'sell') return res.status(400).json({ error: 'invalid side' });
-    if (!intervalMs || Number(intervalMs) < MIN_BOT_INTERVAL_MS) {
-      return res.status(400).json({ error: `minimum interval is ${MIN_BOT_INTERVAL_MS}ms` });
+  router.post('/bot/config', marketHandler(async (req, res) => {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'invalid bot config' });
     }
-    if (!amount || Number(amount) <= 0) return res.status(400).json({ error: 'invalid amount' });
-    await configureTradingBot(req.playerId, coinId, side, Number(intervalMs), Number(amount));
+    const { coinId, side, intervalMs, amount } = req.body;
+    if (typeof coinId !== 'string' || !Object.prototype.hasOwnProperty.call(COIN_MAP, coinId)) {
+      return res.status(400).json({ error: 'invalid coin' });
+    }
+    if (side !== 'buy' && side !== 'sell') return res.status(400).json({ error: 'invalid side' });
+    if (typeof intervalMs !== 'number' || !Number.isSafeInteger(intervalMs) || !BOT_CONFIG_INTERVALS_MS.includes(intervalMs)) {
+      return res.status(400).json({ error: 'invalid interval' });
+    }
+    if (typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: 'invalid amount' });
+    await configureTradingBot(req.playerId, coinId, side, intervalMs, amount);
     res.json({ success: true });
-  });
+  }));
 
-  router.post('/bot/toggle', async (req, res) => {
+  router.post('/bot/toggle', marketHandler(async (req, res) => {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || typeof req.body.enabled !== 'boolean') {
+      return res.status(400).json({ error: 'invalid enabled' });
+    }
     const bot = await getTradingBot(req.playerId);
     const { enabled } = req.body as { enabled: boolean };
     if (enabled && (!bot?.coin_id || !bot.side || !bot.interval_ms || !bot.amount)) {
       return res.status(400).json({ error: 'trading bot not configured' });
     }
-    await setTradingBotEnabled(req.playerId, Boolean(enabled));
+    await setTradingBotEnabled(req.playerId, enabled);
     res.json({ success: true });
-  });
+  }));
 
   router.get('/leaderboard', marketHandler(async (req, res) => {
     const league = String(req.query.league ?? RANKS[0].name);
