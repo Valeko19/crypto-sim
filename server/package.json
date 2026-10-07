@@ -21,6 +21,8 @@
     "test:ranks": "tsx scripts/tests/rankConsistencyTests.ts",
     "test:recovery": "tsx scripts/tests/marketRecoveryTests.ts",
     "test:tick-backpressure": "tsx scripts/tests/tickBackpressureTests.ts",
+    "test:maintenance": "tsx scripts/tests/dbMaintenanceTests.ts",
+    "test:wal": "tsx scripts/tests/walMaintenanceStress.ts",
     "test:max-buy": "tsx scripts/tests/maxBuyTests.ts",
     "test:supply": "tsx scripts/tests/supplyTests.ts"
   },

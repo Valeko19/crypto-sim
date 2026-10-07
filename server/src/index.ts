@@ -6,7 +6,8 @@ import { startEngineLoop, fearGreedLabel, phaseProgress } from './engine/tick.js
 import { MACRO_CONFIG } from './engine/macroCycle.js';
 import { price, limitPoolSupply } from './engine/amm.js';
 import { COINS } from './config/coins.js';
-import { initDb } from './db/index.js';
+import { db, initDb } from './db/index.js';
+import { startDbMaintenance } from './db/maintenance.js';
 import { getAllPoolSnapshots, getTotalHeldForCoin, pruneOldTradeLogEntries } from './db/queries.js';
 import { createRouter } from './api/routes.js';
 import { createAuthRouter } from './api/authRoutes.js';
@@ -59,6 +60,8 @@ async function main() {
 
   // Reconcile valuation prices with restored/supply-limited pools before serving.
   await commitMarketMutation(state, () => {});
+  const maintenance = startDbMaintenance(db);
+  await maintenance.runNow();
   const app = express();
   app.use(cors());
   app.use(express.json());
@@ -74,9 +77,16 @@ async function main() {
   app.use('/api', createRouter(state));
 
   const httpServer = http.createServer(app);
-  const { broadcast, sendToPlayer, getConnectedPlayerIds } = createWsServer(httpServer);
+  const { broadcast, sendToPlayer, getConnectedPlayerIds, wss } = createWsServer(httpServer);
+  let stopping = false;
+  const background = new Set<Promise<unknown>>();
+  function track(work: Promise<unknown>) {
+    const settled = work.catch(() => {}).finally(() => { background.delete(settled); });
+    background.add(settled);
+  }
 
-  startEngineLoop(state, () => {
+  const engineTimer = startEngineLoop(state, () => {
+    if (stopping) return;
     const coins = COINS.map(cfg => {
       const cs = state.coins[cfg.id];
       return {
@@ -97,15 +107,16 @@ async function main() {
       },
     });
 
-    computeAllPortfolios(state)
-      .then(portfolios => {
+    track(computeAllPortfolios(state)
+      .then(async portfolios => {
+        if (stopping) return;
+        const sends: Promise<unknown>[] = [];
         for (const playerId of getConnectedPlayerIds()) {
           const view = portfolios.get(playerId);
-          if (view) sendToPlayer(playerId, 'portfolio_updates', view);
+          if (view) sends.push(sendToPlayer(playerId, 'portfolio_updates', view));
         }
-        checkRankUpRewards(portfolios).catch(() => {});
-      })
-      .catch(() => {});
+        await Promise.allSettled([...sends, checkRankUpRewards(portfolios)]);
+      }));
 
     // Push the in-progress candle for every coin each tick so the chart updates
     // live instead of the client having to poll the REST endpoint.
@@ -117,29 +128,46 @@ async function main() {
     broadcast('candle_updates', { candles });
   });
 
-  setInterval(() => {
-    persistPoolSnapshots(state).catch(() => {});
+  const poolTimer = setInterval(() => {
+    if (!stopping) track(persistPoolSnapshots(state));
   }, 10_000);
 
-  setInterval(() => {
-    distributeStakingRewards(state).catch(() => {});
+  const stakingTimer = setInterval(() => {
+    if (!stopping) track(distributeStakingRewards(state));
   }, STAKING_DISTRIBUTION_INTERVAL_MS);
 
-  setInterval(() => {
-    runTradingBots(state).catch(() => {});
+  const botTimer = setInterval(() => {
+    if (!stopping) track(runTradingBots(state));
   }, BOT_POLL_INTERVAL_MS);
 
   // Keeps trade_log (see db/index.ts) from growing unbounded — once at boot
   // covers a server that restarts often (dev), the daily interval covers one
   // that doesn't (prod running for weeks between deploys).
-  pruneOldTradeLogEntries().catch(() => {});
-  setInterval(() => {
-    pruneOldTradeLogEntries().catch(() => {});
+  track(pruneOldTradeLogEntries());
+  const pruneTimer = setInterval(() => {
+    if (!stopping) track(pruneOldTradeLogEntries());
   }, 24 * 60 * 60 * 1000);
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.on(signal, () => {
-      persistPoolSnapshots(state).finally(() => process.exit(0));
+      if (stopping) return;
+      stopping = true;
+      for (const timer of [engineTimer, poolTimer, stakingTimer, botTimer, pruneTimer]) clearInterval(timer);
+      const maintenanceStopped = maintenance.stop();
+      for (const socket of wss.clients) socket.terminate();
+      const socketsClosed = new Promise<void>(resolve => wss.close(() => resolve()));
+      const httpClosed = new Promise<void>(resolve => httpServer.close(() => resolve()));
+      void (async () => {
+        await Promise.all([maintenanceStopped, socketsClosed, httpClosed]);
+        await Promise.all(background);
+        // The market-lock barrier also drains the at-most-one admitted tick.
+        // Keep the existing final snapshot path until its removal is audited.
+        await persistPoolSnapshots(state);
+        await db.close();
+      })().then(() => process.exit(0), error => {
+        console.error('Shutdown failed', error);
+        process.exit(1);
+      });
     });
   }
 
